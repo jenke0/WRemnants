@@ -494,19 +494,14 @@ def create_variation(
     h2=False,
     var_size=0.01,
 ):
-    if h2:
-        i -= 1
-    not_muon = "probe"
-    if muon == "probe":
-        not_muon = "tag"
 
+    not_muon = "probe"
     var = variation_hist[{"gen_time": k, f"pt_{not_muon}": i, f"eta_{not_muon}": j}]
 
-    if muon == "tag":
-        var = var.project("time", "mll", f"pt_{muon}", f"eta_{muon}")
-        var = broadcastSystHist(var, refererence_hist)
-        var = multiplyHists(scaleHist(var, var_size / (nbins_total)), refererence_hist)
-        var = var.project("time", "mll", "pt_probe", "eta_probe")
+    var = var.project("time", "mll", f"pt_{muon}", f"eta_{muon}")
+    var = broadcastSystHist(var, refererence_hist)
+    var = multiplyHists(scaleHist(var, var_size / (nbins_total)), refererence_hist)
+    var = var.project("time", "mll", "pt_probe", "eta_probe")
     return var
 
 
