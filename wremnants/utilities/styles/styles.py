@@ -1,0 +1,851 @@
+import copy
+
+from matplotlib import colormaps
+
+from wums import boostHistHelpers as hh
+from wums import logging
+
+logger = logging.child_logger(__name__)
+
+
+def translate_html_to_latex(n):
+    # transform html style formatting into latex style
+    if "</" in n:
+        n = (
+            n.replace("<i>", r"\mathit{")
+            .replace("</i>", "}")
+            .replace("<sub>", "_{")
+            .replace("<sup>", "^{")
+            .replace("</sub>", "}")
+            .replace("</sup>", "}")
+            .replace(r"μ", r"\mu")
+            .replace(r"ε", r"\epsilon")
+            .replace(" ", r"\ ")
+        )
+        n = f"${n}$"
+    return n
+
+
+# colors from CAT (https://cms-analysis.docs.cern.ch/guidelines/plotting/colors/)
+# #5790fc blue
+# #f89c20 orange
+# #e42536 red
+# #964a8b light purple
+# #9c9ca1 grey
+# #7a21dd dark purple
+
+process_colors = {
+    "Data": "black",
+    "Zmumu": "#5790FC",
+    "Z": "#5790FC",
+    "Zll": "#5790FC",
+    "Zee": "#5790FC",
+    "Ztautau": "#964a8b",
+    "Wmunu": "#E42536",
+    "Wenu": "#E42536",
+    "WmunuOOA": "#2E9B92E6",
+    "Wtaunu": "#F89C20",
+    "DYlowMass": "deepskyblue",
+    "PhotonInduced": "gold",
+    "Top": "green",
+    "Diboson": "#7A21DD",
+    "Rare": "#7A21DD",
+    "Other": "#7A21DD",
+    "QCD": "#964A8B",
+    "Fake": "#964A8B",
+    "Fake_e": "#964A8B",
+    "Fake_mu": "#964A8B",
+    "Prompt": "#E42536",
+    "WtoNMu_5": "#006400",
+    "WtoNMu_10": "#009933",
+    "WtoNMu_30": "#00CC99",
+    "WtoNMu_50": "#00FFFF",
+    "BSM": "#409C3D",
+    "BuToJpsiK": "#f89c20",
+    "BuToJpsiPi": "#e42536",
+    "YnSToMuMu": "#00FFFF",
+    "Y1SToMuMu": "#00CC99",
+    "Y2SToMuMu": "#009933",
+    "Y3SToMuMu": "#006400",
+}
+
+process_supergroups = {
+    "sv": {
+        "Prompt": [
+            "Wmunu",
+            "Wtaunu",
+            "Ztautau",
+            "Zmumu",
+            "DYlowMass",
+            "PhotonInduced",
+            "Top",
+            "Diboson",
+        ],
+        "Fake": ["Fake"],
+        "QCD": ["QCD"],
+    },
+    "w_mass": {
+        "Wmunu": ["Wmunu"],
+        "Wtaunu": ["Wtaunu"],
+        "Z": ["Ztautau", "Zmumu", "DYlowMass"],
+        "Fake": ["Fake"],
+        "Rare": ["PhotonInduced", "Top", "Diboson"],
+    },
+    "w_mass_ext": {
+        "Wmunu": ["Wmunu"],
+        "WmunuOOA": ["WmunuOOA"],
+        "Wtaunu": ["Wtaunu"],
+        "Z": ["Ztautau", "Zmumu", "DYlowMass"],
+        "Fake": ["Fake"],
+        "Rare": ["PhotonInduced", "Top", "Diboson"],
+    },
+    "z_dilepton": {
+        "Zmumu": ["Zmumu"],
+        "Other": ["Other", "Ztautau", "PhotonInduced"],
+    },
+    "w_lowpu": {
+        "Zll": ["Ztautau", "Zmumu", "Zee", "DYlowMass"],
+        "Rare": ["PhotonInduced", "Top", "Diboson"],
+    },
+}
+process_supergroups["z_wlike"] = process_supergroups["z_dilepton"]
+process_supergroups["w_mass_npmc"] = copy.deepcopy(process_supergroups["w_mass"])
+process_supergroups["w_mass_npmc"]["Fake"] = ["QCD"]
+process_supergroups["z_lowpu"] = process_supergroups["z_dilepton"]
+process_supergroups["bsm"] = process_supergroups["w_mass"]
+process_supergroups["bsm"]["BSM"] = ["WtoNMu_5", "WtoNMu_10", "WtoNMu_50"]
+
+process_labels = {
+    "Data": "Data",
+    "Zmumu": r"Z/$\gamma^{\star}\to\mu\mu$",
+    "Zee": r"Z/$\gamma^{\star}\to ee$",
+    "Zll": r"Z/$\gamma^{\star}\to\ell\ell$",
+    "Z": r"Z/$\gamma^{\star}\to\mu\mu/\tau\tau$",
+    "Ztautau": r"Z/$\gamma^{\star}\to\tau\tau$",
+    "Wmunu": r"W$^{\pm}\to\mu\nu$",
+    "Wenu": r"W$^{\pm}\to e\nu$",
+    "WmunuOOA": r"W$^{\pm}\to\mu\nu$ OOA",
+    "Wtaunu": r"W$^{\pm}\to\tau\nu$",
+    "DYlowMass": r"Z/$\gamma^{\star}\to\mu\mu$, $10<m<50$ GeV",
+    "PhotonInduced": r"$\gamma$-induced",
+    "Top": "Top",
+    "Diboson": "Diboson",
+    "QCD": "QCD MC",
+    "Other": "Other",
+    "Fake": "Nonprompt",
+    "Fake_e": "Nonprompt (e)",
+    "Fake_mu": r"Nonprompt ($\mu$)",
+    "Prompt": "Prompt",
+    "WtoNMu_5": r"W$^{\pm}\to\mu\mathrm{N} (5GeV)$",
+    "WtoNMu_10": r"W$^{\pm}\to\mu\mathrm{N} (10GeV)$",
+    "WtoNMu_30": r"W$^{\pm}\to\mu\mathrm{N} (30GeV)$",
+    "WtoNMu_50": r"W$^{\pm}\to\mu\mathrm{N} (50GeV)$",
+}
+
+axis_labels = {
+    "pt": {"label": r"$\mathit{p}_{T}^{\mu}$", "unit": "GeV"},
+    "ptGen": {"label": r"$\mathit{p}_{T}^{\mu}$", "unit": "GeV"},
+    "ptW": {"label": r"$\mathit{p}_{T}^{\mu+MET}$", "unit": "GeV"},
+    "ptVGen": {"label": r"$\mathit{p}_{T}^\mathrm{V}$", "unit": "GeV"},
+    "ptVgen": {"label": r"$\mathit{p}_{T}^\mathrm{V}$", "unit": "GeV"},
+    "ptWgen": {"label": r"$\mathit{p}_{T}^\mathrm{W}$", "unit": "GeV"},
+    "ptZgen": {"label": r"$\mathit{p}_{T}^\mathrm{Z}$", "unit": "GeV"},
+    "muonJetPt": {"label": r"$\mathit{p}_{T}^\mathrm{jet[\mu]}$", "unit": "GeV"},
+    "recoil_perp": {"label": r"$\it{u}_{\mathrm{T}}^{\perp}$", "unit": "GeV"},
+    "recoil_para": {"label": r"$\it{u}_{\mathrm{T}}^{\parallel}$", "unit": "GeV"},
+    "qGen": r"$\mathit{q}^{\mu}$",
+    "eta": r"$\mathit{\eta}^{\mu}$",
+    "etaGen": r"$\mathit{\eta}^{\mu}$",
+    "abseta": r"$|\mathit{\eta}^{\mu}|$",
+    "absEta": r"$|\mathit{\eta}^{\mu}|$",
+    "absEtaGen": r"$|\mathit{\eta}^{\mu}|$",
+    "mtGen": {"label": r"$\mathit{m}_{T}^{\mu+MET}$", "unit": "GeV"},
+    "ptll": {"label": r"$\mathit{p}_{\mathrm{T}}^{\mu\mu}$", "unit": "GeV"},
+    "yll": r"$\mathit{y}^{\mu\mu}$",
+    "qT": {"label": r"$\mathit{p}_{T}^\mathrm{V}$", "unit": "GeV"},
+    "absY": r"$|\mathit{Y}^\mathrm{V}|$",
+    "Q": {"label": r"$\mathit{Q}$", "unit": "GeV"},
+    "absYVGen": r"|$\mathit{Y}^\mathrm{V}$|",
+    "mll": {"label": r"$\mathit{m}_{\mu\mu}$", "unit": "GeV"},
+    "ewMll": {"label": r"$\mathit{m}^{\mathrm{EW}}_{\mu\mu}$", "unit": "GeV"},
+    "ewMlly": {"label": r"$\mathit{m}^{\mathrm{EW}}_{\mu\mu\gamma}$", "unit": "GeV"},
+    "costhetastarll": r"$\cos{\mathit{\theta}^{\star}_{\mu\mu}}$",
+    "cosThetaStarll": r"$\cos{\mathit{\theta}^{\star}_{\mu\mu}}$",
+    "cosThetaStarll_quantile": {
+        "label": r"$\cos{\mathit{\theta}^{\star}_{\mu\mu}}$",
+        "unit": "quantile",
+    },
+    "absCosThetaStarll": r"$|\cos{\mathit{\theta}^{\star}_{\mu\mu}}|$",
+    "phistarll": r"$\mathit{\phi}^{\star}_{\mu\mu}$",
+    "phiStarll": r"$\mathit{\phi}^{\star}_{\mu\mu}$",
+    "phiStarll_quantile": {
+        "label": r"$\mathit{\phi}^{\star}_{\mu\mu}$",
+        "unit": "quantile",
+    },
+    "absPhiStarll": r"$|\mathit{\phi}^{\star}_{\mu\mu}|$",
+    "MET_pt": {"label": r"$\mathit{p}_{\mathrm{T}}^{miss}$", "unit": "GeV"},
+    "MET": {"label": r"$\mathit{p}_{\mathrm{T}}^{miss}$", "unit": "GeV"},
+    "met": {"label": r"$\mathit{p}_{\mathrm{T}}^{miss}$", "unit": "GeV"},
+    "mt": {"label": r"$\mathit{m}_{T}$", "unit": "GeV"},
+    "mtfix": {"label": r"$\mathit{m}_{T}^\mathrm{fix}$", "unit": "GeV"},
+    "etaPlus": r"$\mathit{\eta}^{\mu(+)}$",
+    "etaMinus": r"$\mathit{\eta}^{\mu(-)}$",
+    "ptPlus": {"label": r"$\mathit{p}_{\mathrm{T}}^{\mu(+)}$", "unit": "GeV"},
+    "ptMinus": {"label": r"$\mathit{p}_{\mathrm{T}}^{\mu(-)}$", "unit": "GeV"},
+    "etaSum": r"$\mathit{\eta}^{\mu(+)} + \mathit{\eta}^{\mu(-)}$",
+    "etaDiff": r"$\mathit{\eta}^{\mu(+)} - \mathit{\eta}^{\mu(-)}$",
+    "etaDiff": r"$\mathit{\eta}^{\mu(+)} - \mathit{\eta}^{\mu(-)}$",
+    "etaAbsEta": r"$\mathit{\eta}^{\mu[\mathrm{argmax(|\mathit{\eta}^{\mu}|)}]}$",
+    "ewLogDeltaM": "ewLogDeltaM",
+    "dxy": {"label": r"$\mathit{d}_\mathrm{xy}$", "unit": "cm"},
+    "dxybs": {"label": r"$\mathit{dxy}_\mathrm{bs}^{\mu}$", "unit": "cm"},
+    "muon_SV_dlenSig": r"Muon SV decay length significance",
+    "muon_sip3d": r"Muon IP 3D significance",
+    "iso": {"label": r"$I$", "unit": "GeV"},
+    "relIso": r"$I_\mathrm{rel}$",
+    "run": r"Run range",
+    "nRecoVtx": r"Number of reconstructed vertices",
+    "PV_npvsGood": r"Number of reconstructed vertices",
+    "utmu": {"label": r"$\mathit{u}_{T}^{\mu}$", "unit": "GeV"},
+    "utAngleSign": r"$\mathrm{sign}(\mathit{u}_{T}^{\mu})$",
+}
+
+legend_labels = {
+    "gamma_cusp-1.": r"$\mathit{\Gamma}_{cusp}$",
+    "gamma_cusp1.": r"$\mathit{\Gamma}_{cusp}$",
+    "gamma_mu_q-1.": r"$\mathit{\gamma}_{\mu}$",
+    "gamma_mu_q1.": r"$\mathit{\gamma}_{\mu}$",
+    "gamma_nu-1.": r"$\mathit{\gamma}_{\nu}$",
+    "gamma_nu1.": r"$\mathit{\gamma}_{\nu}$",
+    "Lambda20.25": r"$\mathit{\Lambda}_{2}$",
+    "Lambda2-0.25": r"$\mathit{\Lambda}_{2}$",
+    "h_qqV-1.": "Hard func.",
+    "h_qqV1.": "Hard func.",
+    "s-1.": "Soft func.",
+    "s1.": "Soft func.",
+    "b_qqV-0.5": r"$qqV$ BF",
+    "b_qqV0.5": r"$qqV$ BF",
+    "b_qqbarV-0.5": r"$q\bar{q}V$ BF",
+    "b_qqbarV0.5": r"$q\bar{q}V$ BF",
+    "b_qqS-0.5": r"$qqS$ BF",
+    "b_qqS0.5": r"$qqS$ BF",
+    "b_qqDS-0.5": r"$qq\Delta S$ BF",
+    "b_qqDS0.5": r"$qq\Delta S$ BF",
+    "b_qg-0.5": r"$qg$ BF",
+    "b_qg0.5": r"$qg$ BF",
+}
+
+legend_labels_combine = {
+    "massShiftW100MeV": r"$\mathit{m}_\mathrm{W} \pm 100\,\mathrm{MeV}$",
+    "massShiftZ100MeV": r"$\mathit{m}_\mathrm{Z} \pm 100\,\mathrm{MeV}$",
+    "QCDscaleWinclusive_PtV0_13000helicity_0_SymAvg": r"$\mathit{A}_0$",
+    "QCDscaleWinclusive_PtV0_13000helicity_1_SymAvg": r"$\mathit{A}_1$",
+    "QCDscaleWinclusive_PtV0_13000helicity_2_SymAvg": r"$\mathit{A}_2$",
+    "QCDscaleWinclusive_PtV0_13000helicity_3_SymAvg": r"$\mathit{A}_3$",
+    "resumTNP_gamma_nu": r"$\mathit{\gamma}_{\nu}$",
+    "chargeVgenNP0scetlibNPWLambda2": r"$\mathit{\Lambda}_{2}$",
+    "pythia_shower_kt": r"Pythia shower $\mathit{k}_T$",
+    "nlo_ew_virtual": "EW virtual",
+    "weak_default": "EW virtual",
+    "virtual_ewCorr0": "EW virtual",
+    "horacelophotosmecoffew_FSRCorr0": "FSR MEC off",
+    "horaceqedew_FSRCorr0": "FSR horace",
+    "pythiaew_ISRCorr0": "ISR off",
+    "horacelophotosmecoffew_FSRCorr1": "FSR MEC off",
+    "horaceqedew_FSRCorr1": "FSR horace",
+    "pythiaew_ISRCorr1": "ISR off",
+    "pdfMSHT20mbrangeSymAvg": r"$\mathit{m}_b + 1.25\, GeV$",
+    "pdfMSHT20mcrangeSymAvg": r"$\mathit{m}_c + 0.2\, GeV$",
+}
+
+# uncertainties
+common_groups = [
+    "Total",
+    "stat",
+    "binByBinStat",
+    "luminosity",
+    "recoil",
+    "CMS_background",
+    "theory_ew",
+    "normXsecW",
+    "width",
+    "ZmassAndWidth",
+    "massAndWidth",
+    "normXsecZ",
+]
+nuisance_grouping = {
+    "super": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "theory",
+        "expNoCalib",
+        "muonCalibration",
+    ],
+    "splitAi": common_groups
+    + [
+        "angularCoeffs",
+        "angularCoeffs_A0",
+        "angularCoeffs_A1",
+        "angularCoeffs_A2",
+        "angularCoeffs_A3",
+        "angularCoeffs_A4",
+        "angularCoeffs_A5",
+        "angularCoeffs_A6",
+        "angularCoeffs_A7",
+        "pdfCT18Z",
+        "pdfCT18ZNoAlphaS",
+        "pdfCT18ZAlphaS",
+        "pTModeling",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
+        "massShift",
+        "pythia_shower_kt",
+        "resumTNP",
+        "resumNonpert",
+        "resumTransition",
+        "resumScale",
+        "bcQuarkMass",
+    ],
+    "efficiency": [
+        "muon_eff_all",
+        "muon_eff_stat",
+        "muon_eff_syst",
+        "muon_eff_stat_reco",
+        "muon_eff_stat_tracking",
+        "muon_eff_stat_idip",
+        "muon_eff_stat_trigger",
+        "muon_eff_stat_iso",
+        "muon_eff_syst_reco",
+        "muon_eff_syst_tracking",
+        "muon_eff_syst_idip",
+        "muon_eff_syst_trigger",
+        "muon_eff_syst_iso",
+        "muon_eff_syst_veto",
+        "muon_eff_stat_veto",
+    ],
+    "max": common_groups
+    + [
+        "angularCoeffs",
+        "pdfCT18Z",
+        "pTModeling",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
+        "normWplus_Helicity-1",
+        "normWplus_Helicity0",
+        "normWplus_Helicity1",
+        "normWplus_Helicity2",
+        "normWplus_Helicity3",
+        "normWplus_Helicity4",
+        "normWminus_Helicity-1",
+        "normWminus_Helicity0",
+        "normWminus_Helicity1",
+        "normWminus_Helicity2",
+        "normWminus_Helicity3",
+        "normWminus_Helicity4",
+        "normW_Helicity-1",
+        "normW_Helicity0",
+        "normW_Helicity1",
+        "normW_Helicity2",
+        "normW_Helicity3",
+        "normW_Helicity4",
+        "normZ",
+        "normZ_Helicity-1",
+        "normZ_Helicity0",
+        "normZ_Helicity1",
+        "normZ_Helicity2",
+        "normZ_Helicity3",
+        "normZ_Helicity4",
+    ],
+    "max_recoil": common_groups
+    + [
+        "angularCoeffs",
+        "pdfCT18Z",
+        "pTModeling",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
+        "recoil_stat",
+        "recoil_syst",
+        "recoil_syst_tmp",
+    ],
+    "width": common_groups
+    + [
+        "angularCoeffs",
+        "pdfCT18Z",
+        "pTModeling",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
+        "massShift",
+        "recoil_stat",
+        "recoil_syst_tmp",
+        "recoil_syst",
+    ],
+    "min": common_groups
+    + [
+        "massShiftW",
+        "massShiftZ",
+        "QCDscalePtChargeMiNNLO",
+        "QCDscaleZPtChargeMiNNLO",
+        "QCDscaleWPtChargeMiNNLO",
+        "QCDscaleZPtHelicityMiNNLO",
+        "QCDscaleWPtHelicityMiNNLO",
+        "QCDscaleZPtChargeHelicityMiNNLO",
+        "QCDscaleWPtChargeHelicityMiNNLO",
+        "pythia_shower_kt",
+        "pdfCT18ZNoAlphaS",
+        "pdfCT18ZAlphaS",
+        "resumTNP",
+        "resumNonpert",
+        "resumTransition",
+        "resumScale",
+        "bcQuarkMass",
+        "muon_eff_stat_reco",
+        "muon_eff_stat_trigger",
+        "muon_eff_stat_iso",
+        "muon_eff_stat_idip",
+        "muon_eff_syst_reco",
+        "muon_eff_syst_trigger",
+        "muon_eff_syst_iso",
+        "muon_eff_syst_idip",
+        "muonPrefire",
+        "ecalPrefire",
+        "nonClosure",
+        "resolutionCrctn",
+        "FakeRate",
+        "FakeShape",
+        "FakeeRate",
+        "FakeeShape",
+        "FakemuRate",
+        "FakemuShape",
+        "binByBinStatDYlowMass",
+        "binByBinStatDiboson",
+        "binByBinStatPhotonInduced",
+        "binByBinStatTop",
+        "binByBinStatWmunu",
+        "binByBinStatWtaunu",
+        "binByBinStatZmumu",
+        "binByBinStatZtautau",
+        "binByBinStatWtoNMu_5",
+        "binByBinStatWtoNMu_10",
+        "binByBinStatWtoNMu_30",
+        "binByBinStatWtoNMu_50",
+    ],
+    "alphaS": common_groups
+    + [
+        "pdfCT18ZNoAlphaS",
+        "pdfHERAPDF20NoAlphaS",
+        "resumTNP",
+        "resumNonpert",
+        "resumTransition",
+        "resumScale",
+        "resumTransitionFOScale",
+        "bcQuarkMass",
+        "fo_stat",
+        "angularCoeffs",
+        "muonCalibration",
+        "muon_eff_stat",
+        "muon_eff_syst",
+        "muonPrefire",
+        "ecalPrefire",
+    ],
+    "unfolding": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "theory",
+        "expNoLumi",
+        "luminosity",
+    ],
+    "unfolding_prefsr": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "theory_qcd",
+        "theory_ew",
+        "expNoLumi",
+        "luminosity",
+    ],
+    "unfolding_max": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "binByBinStatW",
+        "binByBinStatZ",
+        "experiment",
+        "angularCoeffs",
+        "pdfCT18Z",
+        "pTModeling",
+        "theory_ew",
+        "massShift",
+        "widthW",
+        "widthZ",
+        "sin2thetaZ",
+    ],
+    "unfolding_min": [
+        "Total",
+        "stat",
+        "binByBinStatW",
+        "binByBinStat",
+        "binByBinStatZ",
+        "experiment",
+        "QCDscalePtChargeMiNNLO",
+        "QCDscaleZPtChargeMiNNLO",
+        "QCDscaleWPtChargeMiNNLO",
+        "QCDscaleZPtHelicityMiNNLO",
+        "QCDscaleWPtHelicityMiNNLO",
+        "QCDscaleZPtChargeHelicityMiNNLO",
+        "QCDscaleWPtChargeHelicityMiNNLO",
+        "QCDscaleZMiNNLO",
+        "QCDscaleWMiNNLO",
+        "pythia_shower_kt",
+        "pdfCT18ZNoAlphaS",
+        "pdfCT18ZAlphaS",
+        "resumTNP",
+        "resumNonpert",
+        "resumTransition",
+        "resumScale",
+        "bcQuarkMass",
+        "theory_ew",
+    ],
+    "xsecs": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "binByBinStatW",
+        "binByBinStatZ",
+        "expNoLumi",
+        "luminosity",
+        "angularCoeffs",
+        "pdfCT18Z",
+        "pTModeling",
+        "theory_ew",
+        "massShift",
+        "widthW",
+        "widthZ",
+        "sin2thetaZ",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
+        "recoil",
+        "CMS_background",
+    ],
+}
+
+text_dict = {
+    "Zmumu": r"$\mathrm{Z}\rightarrow\mu\mu$",
+    "ZToMuMu": r"$\mathrm{Z}\rightarrow\mu\mu$",
+    "Wplusmunu": r"$\mathrm{W}^+\rightarrow\mu\nu$",
+    "Wminusmunu": r"$\mathrm{W}^-\rightarrow\mu\nu$",
+    "WplusToMuNu": r"$\mathrm{W}^+\rightarrow\mu\nu$",
+    "WminusToMuNu": r"$\mathrm{W}^-\rightarrow\mu\nu$",
+}
+
+poi_types = {
+    "mu": r"$\mu$",
+    "nois": r"$\mathrm{NOI}$",
+    "pmaskedexp": r"d$\sigma$ [pb]",
+    "sumpois": r"d$\sigma$ [pb]",
+    "pmaskedexpnorm": r"1/$\sigma$ d$\sigma$",
+    "sumpoisnorm": r"1/$\sigma$ d$\sigma$",
+    "ratiometapois": r"$\sigma(W^{+})/\sigma(W^{-})$",
+    "helpois": "Ai",
+    "helmetapois": "Ai",
+}
+
+translate_selection = {
+    "charge": lambda x: rf"$\mathit{{q}}^\mu = {int(x)}$",
+    "qGen": lambda x: rf"$\mathit{{q}}^\mu = {int(x)}$",
+    "absYVGen": lambda l, h: rf"${round(l,3)} < |Y| < {round(h,3)}$",
+    "helicitySig": lambda x: rf"$\sigma_{{{'UL' if x==-1 else int(x)}}}$",
+    "ai": lambda x: rf"$A_{int(x)}$",
+    "utAngleSign": lambda x: rf"$\mathit{{sign}}(\mathit{{u}}_{{T}}^\mu) = {int(x)}$",
+}
+
+impact_labels = {
+    "WtoNMu_5": "<i>μ</i><sub>W→Nμ(5GeV)</sub>",
+    "WtoNMu_10": "<i>μ</i><sub>W→Nμ(10GeV)</sub>",
+    "WtoNMu_30": "<i>μ</i><sub>W→Nμ(30GeV)</sub>",
+    "WtoNMu_50": "<i>μ</i><sub>W→Nμ(50GeV)</sub>",
+    "massShiftZ100MeV": "<i>m</i><sub>Z</sub>",
+    "massShiftW100MeV": "<i>m</i><sub>W</sub>",
+    "widthZ": "Γ<i>m</i><sub>Z</sub>",
+    "widthW": "Γ<i>m</i><sub>W</sub>",
+    "angularCoeffs": "Angular coefficients",
+    "QCDscale": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale",
+    "QCDscaleZMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (Z)",
+    "QCDscaleWMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (W)",
+    "QCDscalePtChargeMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale",
+    "QCDscaleZPtChargeMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (Z)",
+    "QCDscaleWPtChargeMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (W)",
+    "QCDscaleZPtHelicityMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (Z)",
+    "QCDscaleWPtHelicityMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (W)",
+    "QCDscaleZPtChargeHelicityMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (Z)",
+    "QCDscaleWPtChargeHelicityMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (W)",
+    "resumTransitionFOScale": "Matching + FO scale",
+    "fo_stat": "FO stat.",
+    "binByBinStat": "Simulation stat.",
+    "binByBinStatW": "Bin-by-bin stat. (W)",
+    "binByBinStatZ": "Bin-by-bin stat. (Z)",
+    "binByBinStatWmunu": "Bin-by-bin stat. (W→μν)",
+    "binByBinStatWtaunu": "Bin-by-bin stat. (W→τν)",
+    "binByBinStatDYlowMass": "Bin-by-bin stat. (Z→μμ, m<50GeV)",
+    "binByBinStatZmumu": "Bin-by-bin stat. (Z→μμ)",
+    "binByBinStatZtautau": "Bin-by-bin stat. (Z→ττ)",
+    "binByBinStatDiboson": "Bin-by-bin stat. (VV)",
+    "binByBinStatPhotonInduced": "Bin-by-bin stat. (γ-induced)",
+    "binByBinStatTop": "Bin-by-bin stat. (top)",
+    "binByBinStatWtoNMu_5": "Bin-by-bin stat. (BSM)",
+    "binByBinStatWtoNMu_10": "Bin-by-bin stat. (BSM)",
+    "binByBinStatWtoNMu_30": "Bin-by-bin stat. (BSM)",
+    "binByBinStatWtoNMu_50": "Bin-by-bin stat. (BSM)",
+    "recoil": "recoil",
+    "CMS_background": "Other bkg.",
+    "recoil_stat": "recoil stat.",
+    "recoil_syst_tmp": "recoil syst.",
+    "recoil_syst": "recoil syst.",
+    "FakeHighMT": "FakeHighMT",
+    "FakeLowMT": "FakeLowMT",
+    "rFake": "fakerate",
+    "rFakemu": "fakerate",
+    "rFakee": "fakerate",
+    "FakemuHighMT": "FakeHighMT",
+    "FakemuLowMT": "FakeLowMT",
+    "FakeeHighMT": "FakeHighMT",
+    "FakeeLowMT": "FakeLowMT",
+    "massShiftZ": "Z boson mass",
+    "massShiftW": "W boson mass",
+    "massShift": "W boson mass",
+    "pdfMSHT20": "PDF + <i>α</i><sub>S</sub>",
+    "pdfCT18Z": "PDF + <i>α</i><sub>S</sub>",
+    "pdfMSHT20NoAlphaS": "PDF",
+    "pdfMSHT20AlphaS": "<i>α</i><sub>S</sub> PDF",
+    "pdfCT18ZAlphaS": "<i>α</i><sub>S</sub> PDF",
+    "pdfCT18ZNoAlphaS": "PDF",
+    "pdfHERAPDF20NoAlphaS": "PDF",
+    "pTModeling": "<i>p</i><sub>T</sub><sup>V</sup> modelling",
+    "resum": "Resummation",
+    "resumTNP": "TNP",
+    "resumNonpert": "Nonperturbative",
+    "muonCalibration": "Muon calibration",
+    "muonScale": "Muon scale",
+    "nonClosure": "Muon scale",
+    "resolutionCrctn": "Muon resolution",
+    "muon_eff_stat": "<i>ε</i><sup>μ</sup><sub>stat</sub>",
+    "muon_eff_syst": "<i>ε</i><sup>μ</sup><sub>syst</sub>",
+    "prefire": "L1 prefire",
+    "muonPrefire": "L1 muon prefire",
+    "ecalPrefire": "L1 ecal prefire",
+    "stat": "Data stat.",
+    "luminosity": "Luminosity",
+    "FakeRate": "Fake rate factors",
+    "FakeShape": "Fake shape corrections",
+    "Fake": "Fakes",
+    "ZmassAndWidth": "Z mass & width",
+    "bcQuarkMass": "b,c quark masses",
+    "experiment": "Experiment",
+    "expNoLumi": "Experiment",
+    "expNoCalib": "Experiment (excl. calib.)",
+    "theory": "Theory",
+    "theory_qcd": "Theory (QCD)",
+    "theory_ew": "Theory (EW)",
+    "nlo_ew_virtual": "EW (virtual)",
+    "pythia_shower_kt": "Pythia shower <i>k</i><sub>T</sub>",
+    "ScaleClosA_correction_unc0": "<i>p</i><sub>T</sub><sup>μ</sup> calib. Δ<i>m</i><sub>Z</sub><sup>PDG</sup>",
+    "ScaleClos_correction_unc48": "<i>p</i><sub>T</sub><sup>μ</sup> calib. Z closure stat. (48)",
+    "pdfAlphaSSymAvg": "PDF <i>α</i><sub>S</sub> [avg.]",
+    "pdfAlphaSSymDiff": "PDF <i>α</i><sub>S</sub> [diff.]",
+    "pdfMSHT20mcrangeSymAvg": "PDF Δ<i>m</i><sub>c</sub> [avg.]",
+    "pdfMSHT20mcrangeSymDiff": "PDF Δ<i>m</i><sub>c</sub> [diff.]",
+    "pdfMSHT20mbrangeSymAvg": "PDF Δ<i>m</i><sub>b</sub> [avg.]",
+    "pdfMSHT20mbrangeSymDiff": "PDF Δ<i>m</i><sub>b</sub> [diff.]",
+    "scetlibNPgamma": "SCETLib γ",
+    "chargeVgenNP0scetlibNPZLambda2": "SCETLib λ²(Z)",
+    "chargeVgenNP1scetlibNPWLambda2": "SCETLib λ²(W⁻)",
+    "chargeVgenNP0scetlibNPWLambda2": "SCETLib λ²(W⁺)",
+    "chargeVgenNP0scetlibNPWDelta_Lambda2": "SCETLib Δλ²(W⁻)",
+    "chargeVgenNP1scetlibNPWDelta_Lambda2": "SCETLib Δλ²(W⁺)",
+    "chargeVgenNP0scetlibNPZDelta_Lambda2": "SCETLib Δλ²(Z)",
+    "chargeVgenNP0scetlibNPWLambda4": "SCETLib λ⁴(W⁻)",
+    "chargeVgenNP1scetlibNPWLambda4": "SCETLib λ⁴(W⁺)",
+    "chargeVgenNP0scetlibNPZLambda4": "SCETLib λ⁴(Z)",
+    "resumTransitionWSymDiff": "resum. transition W [diff.]",
+    "resumTransitionZSymDiff": "resum. transition Z [diff.]",
+    "resumTransitionZSymAvg": "resum. transition W [avg.]",
+    "resumTransitionWSymAvg": "resum. transition Z [avg.]",
+    "resumFOScaleWSymAvg": "resum. FO scale W [avg.]",
+    "resumFOScaleWSymDiff": "resum. FO scale W [diff.]",
+    "resumFOScaleZSymAvg": "resum. FO scale Z [avg.]",
+    "resumFOScaleZSymDiff": "resum. FO scale Z [diff.]",
+    "resumTNP_b_qqV": "resum. TNP BF qqV",
+    "resumTNP_b_qg": "resum. TNP BF qg",
+    "resumTNP_b_qqS": "resum. TNP BF qqS",
+    "resumTNP_b_qqbarV": "resum. TNP BF q$\\bar{q}$V",
+    "resumTNP_b_qqDS": "resum. TNP BF qqΔS",
+    "resumTNP_gamma_nu": "resum. TNP γ<sub>ν</sub>",
+    "resumTNP_gamma_mu_q": "resum. TNP γ<sub>μ</sub>",
+    "resumTNP_gamma_cusp": "resum. TNP Γ<sub>cusp</sub>",
+    "resumTNP_h_qqV": "resum. TNP Hard func.",
+    "resumTNP_s": "resum. TNP Soft func.",
+}
+
+
+# Index-driven impact labels, generated programmatically instead of being
+# spelled out one entry at a time.
+
+# pT muon calibration J/ψ statistical uncertainties (specific eigenvector subset)
+impact_labels.update(
+    {
+        f"Scale_correction_unc{i}": f"<i>p</i><sub>T</sub><sup>μ</sup> calib. J/ψ stat. ({i})"
+        for i in range(144)
+    }
+)
+
+# Nonprompt (fake) systematic shape parameters
+impact_labels.update({f"FakeParam{i}var0": f"Nonprompt syst. ({i})" for i in range(3)})
+
+# CT18Z PDF eigenvectors, symmetrized average and difference variations
+impact_labels.update(
+    {
+        f"pdf{i}CT18Z{suffix}": f"PDF ({i}) [{label}]"
+        for suffix, label in (("SymAvg", "avg."), ("SymDiff", "diff."))
+        for i in range(1, 30)
+    }
+)
+
+# QCD scale angular coefficients (A0-A7) per boson and pT(V) phase space.
+# Each phase space lists the bosons it applies to (W/Z/D, with D shown as DY).
+procs = {"W": "W", "Z": "Z", "D": "DY"}
+_qcdscale_helicity_phasespaces = (
+    ("inclusive_PtV0_13000", "inc.", procs),
+    ("fine_PtV40_13000", "40-13,000 GeV", procs),
+    ("fine_PtV27_40", "27-40 GeV", procs),
+)
+impact_labels.update(
+    {
+        f"QCDscale{b}{ps}helicity_{h}_{suffix}": f"<i>A</i><sub>{h}</sub>, {blabel}, {pslabel} [{label}]"
+        for ps, pslabel, bosons in _qcdscale_helicity_phasespaces
+        for b, blabel in bosons.items()
+        for suffix, label in (("SymAvg", "avg."), ("SymDiff", "diff."))
+        for h in range(8)
+    }
+)
+
+
+# same as impact labels but in latex format
+systematics_labels = {k: translate_html_to_latex(v) for k, v in impact_labels.items()}
+
+
+systematics_labels_idxs = {
+    "powhegnloewew": {0: "nominal", 1: "powheg EW NLO / LO"},
+    "powhegnloewew_ISR": {0: "nominal", 1: "powheg EW NLO / NLO QED veto"},
+    "pythiaew": {0: "nominal", 1: "pythia ISR EW on / off"},
+    "horaceqedew": {
+        0: "nominal",
+        1: "Horace / Photos",
+    },
+    "horacenloew": {
+        0: "nominal",
+        1: "Horace EW NLO / LO",
+        2: "Horace EW NLO / LO doubled",
+    },
+    "winhacnloew": {
+        0: "nominal",
+        1: "Winhac EW NLO / LO",
+        2: "Wnhac EW NLO / LO doubled",
+    },
+    "horacelophotosmecoffew": {0: "nominal", 1: "Photos MEC off / on"},
+    "virtual_ew": {
+        0: r"NLOEW + HOEW, CMS, ($G_\mu, m_\mathrm{Z}, \mathrm{sin}^2\Theta_\mathrm{eff}$) scheme",
+        1: r"NLOEW + HOEW, PS, ($G_\mu, m_\mathrm{Z}, \mathrm{sin}^2\Theta_\mathrm{eff}$) scheme",
+        2: r"NLOEW + HOEW, CMS, ($\alpha(m_\mathrm{Z}),m _\mathrm{Z}, \mathrm{sin}^2\Theta_\mathrm{eff}$) scheme",
+    },
+}
+systematics_labels_idxs["virtual_ew_wlike"] = systematics_labels_idxs["virtual_ew"]
+
+
+def get_systematics_label(key, idx=0):
+    if key in systematics_labels:
+        return systematics_labels[key]
+
+    # custom formatting
+    if key in systematics_labels_idxs:
+        return systematics_labels_idxs[key][idx]
+
+    if "helicity" in key.split("_")[-1]:
+        idx = int(key.split("_")[-1][-1])
+        if idx == 0:
+            label = "UL"
+        else:
+            label = str(idx - 1)
+
+        return rf"$\pm\sigma_\mathrm{{{label}}}$"
+
+    # default return key
+    logger.info(f"No label found for {key}")
+    return key
+
+
+def get_labels_colors_procs_sorted(procs):
+    # order of the processes in the plots by this list
+    procs_sort = [
+        "Wmunu",
+        "Fake",
+        "QCD",
+        "Z",
+        "Zmumu",
+        "Wtaunu",
+        "Top",
+        "DYlowMass",
+        "Other",
+        "Ztautau",
+        "Diboson",
+        "PhotonInduced",
+        "Prompt",
+        "Rare",
+    ][::-1]
+
+    cmap = colormaps["tab10"]
+
+    procs = sorted(
+        procs, key=lambda x: procs_sort.index(x) if x in procs_sort else len(procs_sort)
+    )
+    logger.debug(f"Found processes {procs} in fitresult")
+    labels = [process_labels.get(p, p) for p in procs]
+    colors = [process_colors.get(p, cmap(i % cmap.N)) for i, p in enumerate(procs)]
+    return labels, colors, procs
+
+
+def process_grouping(grouping, hist_stack, procs):
+    if grouping in process_supergroups.keys():
+        new_stack = {}
+        for new_name, old_procs in process_supergroups[grouping].items():
+            stacks = [hist_stack[procs.index(p)] for p in old_procs if p in procs]
+            if len(stacks) == 0:
+                continue
+            new_stack[new_name] = hh.sumHists(stacks)
+    else:
+        new_stack = hist_stack
+        logger.warning(
+            f"No supergroups found for input file with mode {grouping}, proceed without merging groups"
+        )
+
+    labels, colors, procs = get_labels_colors_procs_sorted(
+        [k for k in new_stack.keys()]
+    )
+    hist_stack = [new_stack[p] for p in procs]
+
+    return hist_stack, labels, colors, procs

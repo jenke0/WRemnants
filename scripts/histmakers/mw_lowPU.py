@@ -1,9 +1,8 @@
 import os
 
-from utilities import common, differential, parsing
-from wremnants.datasets.datagroups import Datagroups
+from wremnants.utilities import binning, common, parsing, samples
 
-analysis_label = Datagroups.analysisLabel(os.path.basename(__file__))
+analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument(
     "--noGenMatchMC",
@@ -26,16 +25,16 @@ import math
 import hist
 
 import narf
-import wremnants.lowpu as lowpu
-from wremnants import (
+from wremnants.production import (
+    generator_level_definitions,
+    lowpu,
     muon_selections,
-    syst_tools,
+    systematics,
     theory_corrections,
-    theory_tools,
     unfolding_tools,
 )
-from wremnants.datasets.dataset_tools import getDatasets
-from wremnants.histmaker_tools import (
+from wremnants.production.datasets.dataset_tools import getDatasets
+from wremnants.production.histmaker_tools import (
     aggregate_groups,
     scale_to_data,
     write_analysis_output,
@@ -56,6 +55,7 @@ datasets = getDatasets(
             else [f"SingleMuon_{args.era}"]
         )
     ),
+    aux=args.auxiliaryProcs,
     base_path=args.dataPath,
     era=args.era,
     nanoVersion="v12",
@@ -105,10 +105,10 @@ axis_lin = hist.axis.Regular(5, 0, 5, name="lin")
 nominal_axes = [
     axis_fakes_pt,
     axis_fakes_eta,
-    common.axis_charge,
+    binning.axis_charge,
     axis_ptW,
-    common.axis_passIso,
-    common.axis_passMT,
+    binning.axis_passIso,
+    binning.axis_passMT,
 ]
 nominal_cols = ["lep_pt", "lep_eta", "lep_charge", "ptW", "passIso", "passMT"]
 
@@ -116,9 +116,9 @@ nominal_cols = ["lep_pt", "lep_eta", "lep_charge", "ptW", "passIso", "passMT"]
 axes_mt = [
     axis_fakes_pt,
     axis_fakes_eta,
-    common.axis_charge,
+    binning.axis_charge,
     axis_mt,
-    common.axis_passIso,
+    binning.axis_passIso,
 ]
 cols_mt = ["lep_pt", "lep_eta", "lep_charge", "transverseMass", "passIso"]
 
@@ -126,8 +126,8 @@ cols_mt = ["lep_pt", "lep_eta", "lep_charge", "transverseMass", "passIso"]
 axes_fakerate = [
     axis_fakes_pt,
     axis_fakes_eta,
-    common.axis_charge,
-    common.axis_passIso,
+    binning.axis_charge,
+    binning.axis_passIso,
     axis_mt,
 ]  ## was axis_mt
 columns_fakerate = [
@@ -138,11 +138,13 @@ columns_fakerate = [
     "transverseMass",
 ]  ## was transverseMass
 
-theory_helpers_procs = theory_corrections.make_theory_helpers(
+helicity_smoothing_helpers_procs = theory_corrections.make_helicity_smoothing_helpers(
     args.pdfs, args.theoryCorr
 )
-axis_ptVgen = theory_helpers_procs["W"]["qcdScale"].hist.axes["ptVgen"]
-axis_chargeVgen = theory_helpers_procs["W"]["qcdScale"].hist.axes["chargeVgen"]
+axis_ptVgen = helicity_smoothing_helpers_procs["W"]["qcdScale"].hist.axes["ptVgen"]
+axis_chargeVgen = helicity_smoothing_helpers_procs["W"]["qcdScale"].hist.axes[
+    "chargeVgen"
+]
 
 groups_to_aggregate = args.aggregateGroups
 
@@ -151,7 +153,7 @@ if args.unfolding:
     unfolding_cols = {}
     unfolding_selections = {}
     for level in args.unfoldingLevels:
-        a, c, s = differential.get_dilepton_axes(
+        a, c, s = binning.get_unfolding_dilepton_axes(
             args.unfoldingAxes,
             {"ptll": axis_ptW.edges},
             level,
@@ -175,12 +177,12 @@ if args.unfolding:
 # extra axes which can be used to label tensor_axes
 theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
 corr_helpers = theory_corrections.load_corr_helpers(
-    [d.name for d in datasets if d.name in common.vprocs], theory_corrs
+    [d.name for d in datasets if d.name in samples.vprocs], theory_corrs
 )
 
 # recoil initialization
 if not args.noRecoil:
-    from wremnants import recoil_tools
+    from wremnants.production import recoil_tools
 
     recoilHelper = recoil_tools.Recoil("lowPU", args, flavor)
 
@@ -190,9 +192,9 @@ def build_graph(df, dataset):
     results = []
     isQCDMC = dataset.group == "QCD"
 
-    theory_helpers = None
-    if dataset.name in common.vprocs:
-        theory_helpers = theory_helpers_procs[dataset.name[0]]
+    helicity_smoothing_helpers = None
+    if dataset.name in samples.vprocs:
+        helicity_smoothing_helpers = helicity_smoothing_helpers_procs[dataset.name[0]]
 
     if dataset.is_data:
         df = df.DefinePerSample("weight", "1.0")
@@ -246,7 +248,7 @@ def build_graph(df, dataset):
                     args,
                     dataset.name,
                     corr_helpers,
-                    theory_helpers,
+                    helicity_smoothing_helpers,
                     [a for a in unfolding_axes[level] if a.name != "acceptance"],
                     [c for c in unfolding_cols[level] if c != f"{level}_acceptance"],
                     base_name=level,
@@ -415,15 +417,19 @@ def build_graph(df, dataset):
             df = df.Define("SFMC", "lepSF_IDISO*lepSF_HLT*prefireCorr")
 
         df = df.Define("exp_weight", "SFMC")
-        df = theory_tools.define_theory_weights_and_corrs(
-            df, dataset.name, corr_helpers, args, theory_helpers=theory_helpers
+        df = theory_corrections.define_theory_weights_and_corrs(
+            df,
+            dataset.name,
+            corr_helpers,
+            args,
+            helicity_smoothing_helpers=helicity_smoothing_helpers,
         )
     else:
         df = df.DefinePerSample("nominal_weight", "1.0")
 
     # gen match to bare muons to select only prompt muons from MC processes, but also including tau decays
     if not dataset.is_data and not isQCDMC and not args.noGenMatchMC:
-        df = theory_tools.define_postfsr_vars(df)
+        df = generator_level_definitions.define_postfsr_vars(df)
         postFSRLeps = "postfsrMuons" if flavor == "mu" else "postfsrElectrons"
         df = df.Filter(
             f"wrem::hasMatchDR2(lep_eta,lep_phi,GenPart_eta[{postFSRLeps}],GenPart_phi[{postFSRLeps}],0.09)"
@@ -442,7 +448,7 @@ def build_graph(df, dataset):
             df,
             results,
             dataset,
-            common.vprocs,
+            samples.vprocs,
             leps_uncorr,
             leps_corr,
             cols_fakerate=columns_fakerate,
@@ -466,9 +472,9 @@ def build_graph(df, dataset):
                 axis_pt,
                 axis_eta,
                 axis_phi,
-                common.axis_charge,
-                common.axis_passMT,
-                common.axis_passIso,
+                binning.axis_charge,
+                binning.axis_passMT,
+                binning.axis_passIso,
             ],
             [
                 "lep_pt",
@@ -485,7 +491,7 @@ def build_graph(df, dataset):
     # df = df.Define("iso_tmp", "if(lep_iso > 0.15) { std::cout << lep_iso << std::endl; } return lep_iso;")
     # results.append(df.HistoBoost("lep_iso", [axis_iso], ["iso_tmp", "nominal_weight"]))
 
-    # results.append(df.HistoBoost("qcd_space", [axis_pt, axis_eta, axis_iso, common.axis_charge, axis_mT], ["lep_pt", "lep_eta", "lep_iso", "lep_charge", "transverseMass", "nominal_weight"]))
+    # results.append(df.HistoBoost("qcd_space", [axis_pt, axis_eta, axis_iso, binning.axis_charge, axis_mT], ["lep_pt", "lep_eta", "lep_iso", "lep_charge", "transverseMass", "nominal_weight"]))
 
     df = df.Define(
         "ptW", "wrem::pt_2(lep_pt, lep_phi, MET_corr_rec_pt, MET_corr_rec_phi)"
@@ -513,18 +519,18 @@ def build_graph(df, dataset):
                     f"{n}_prefireCorr",
                     [*a],
                     [*c, "prefireCorr_syst_tensor"],
-                    tensor_axes=[common.down_up_axis],
+                    tensor_axes=[binning.down_up_axis],
                 )
             )
 
-            if dataset.name in common.vprocs:
-                df = syst_tools.add_theory_hists(
+            if dataset.name in samples.vprocs:
+                df = systematics.add_theory_hists(
                     results,
                     df,
                     args,
                     dataset.name,
                     corr_helpers,
-                    theory_helpers,
+                    helicity_smoothing_helpers,
                     a,
                     c,
                     base_name=n,
@@ -642,7 +648,7 @@ def build_graph(df, dataset):
 
     if args.unfolding and args.poiAsNoi and dataset.group == base_group:
         for level in args.unfoldingLevels:
-            noiAsPoiHistName = Datagroups.histName(
+            noiAsPoiHistName = common.hist_name(
                 "nominal", syst=f"{level}_yieldsUnfolding"
             )
             logger.debug(
@@ -674,7 +680,7 @@ def build_graph(df, dataset):
             "transverseMass_leptonScaleSyst",
             axes_mt,
             [*cols_mt, f"leptonScaleDummy{netabins}Bins"],
-            tensor_axes=[common.down_up_axis, scale_etabins_axis],
+            tensor_axes=[binning.down_up_axis, scale_etabins_axis],
         )
         results.append(leptonMuonScaleSyst)
 

@@ -4,25 +4,24 @@ import hist
 import numpy as np
 
 import narf
-from utilities import common, differential, parsing
-from wremnants import (
+from wremnants.production import (
+    generator_level_definitions,
     helicity_utils,
-    syst_tools,
+    systematics,
     theory_corrections,
-    theory_tools,
     unfolding_tools,
 )
-from wremnants.datasets.datagroups import Datagroups
-from wremnants.datasets.dataset_tools import getDatasets
-from wremnants.histmaker_tools import (
+from wremnants.production.datasets.dataset_tools import getDatasets
+from wremnants.production.histmaker_tools import (
     aggregate_groups,
     scale_to_data,
     write_analysis_output,
 )
+from wremnants.utilities import binning, common, parsing, samples
 from wums import boostHistHelpers as hh
 from wums import logging
 
-analysis_label = Datagroups.analysisLabel(os.path.basename(__file__))
+analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 
 parser.add_argument(
@@ -96,6 +95,11 @@ parser.add_argument(
     help="Add axis to store info if the event has an outgoing charm quark",
 )
 parser.add_argument(
+    "--addBottomAxis",
+    action="store_true",
+    help="Add axis to store info if the event has outgoing bottom quarks at LHE level",
+)
+parser.add_argument(
     "--finePtVBinning",
     action="store_true",
     help="Use 0.5 GeV binning for ptVgen (e.g., for theory corrections)",
@@ -105,8 +109,7 @@ parser.add_argument(
     action="store_true",
     help="Apply PDF reweighting using boson parameterized corrections",
 )
-
-parser = parsing.set_parser_default(parser, "filterProcs", common.vprocs)
+parser = parsing.set_parser_default(parser, "filterProcs", samples.vprocs)
 parser = parsing.set_parser_default(parser, "era", "13TeVGen")
 parser = parsing.set_parser_default(parser, "aggregateGroups", [])
 args = parser.parse_args()
@@ -172,10 +175,10 @@ axis_chargel_gen = hist.axis.Regular(
 
 # axis_massWgen = hist.axis.Variable([4.0, 13000.0], name="massVgen")
 axis_massWgen = hist.axis.Variable([0, 75, 80, 85, 120.0, 13000], name="massVgen")
-axis_massZgen = hist.axis.Variable([60.0, 120.0, 13000], name="massVgen")
+axis_massZgen = hist.axis.Variable([10, 60.0, 120.0, 13000], name="massVgen")
 
 theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
-procsWithTheoryCorr = [d.name for d in datasets if d.name in common.vprocs]
+procsWithTheoryCorr = [d.name for d in datasets if d.name in samples.vprocs]
 if len(procsWithTheoryCorr) and len(theory_corrs):
     corr_helpers = theory_corrections.load_corr_helpers(
         procsWithTheoryCorr, theory_corrs
@@ -189,7 +192,7 @@ if args.helicity and args.propagatePDFstoHelicity:
     corrs.append("qcdScale")
 if args.centralBosonPDFWeight:
     corrs.append("pdf_central")
-theory_helpers_procs = theory_corrections.make_theory_helpers(
+helicity_smoothing_helpers_procs = theory_corrections.make_helicity_smoothing_helpers(
     args.pdfs, args.theoryCorr, procs=["Z", "W"], corrs=corrs
 )
 
@@ -205,30 +208,30 @@ def build_graph(df, dataset):
     isW = dataset.name.startswith("W") and dataset.name[1] not in [
         "W",
         "Z",
-    ]  # in common.wprocs
+    ]  # in samples.wprocs
     isZ = dataset.name.startswith("Z") and dataset.name[1] not in [
         "W",
         "Z",
-    ]  # in common.zprocs
+    ]  # in samples.zprocs
 
     if isW or isZ:
-        theory_helpers = theory_helpers_procs[dataset.name[0]]
+        helicity_smoothing_helpers = helicity_smoothing_helpers_procs[dataset.name[0]]
     else:
-        theory_helpers = {}
+        helicity_smoothing_helpers = {}
 
-    theoryAgnostic_axes, _ = differential.get_theoryAgnostic_axes(
+    theoryAgnostic_axes, _ = binning.get_theoryAgnostic_axes(
         ptV_flow=True, absYV_flow=True, wlike="Z" in dataset.name
     )
     axis_ptV_thag = theoryAgnostic_axes[0]
     axis_yV_thag = theoryAgnostic_axes[1]
 
-    if args.useUnfoldingBinning and "Z" in dataset.name:
+    if (args.useUnfoldingBinning or args.fiducial) and (isW or isZ):
         unfolding_axes, unfolding_cols, unfolding_selections = (
-            differential.get_dilepton_axes(
+            binning.get_unfolding_dilepton_axes(
                 ["ptVGen", "absYVGen"],
                 {
-                    "ptll": common.ptZ_binning,
-                    "yll": common.yll_20quantiles_binning,
+                    "ptll": binning.ptZ_binning,
+                    "yll": binning.yll_20quantiles_binning,
                 },
                 "prefsr",
                 add_out_of_acceptance_axis=False,
@@ -261,10 +264,10 @@ def build_graph(df, dataset):
             edges_ptV = np.append(np.arange(0, 100.5, 0.5), 13000.0)
         else:
             edges_ptV = (
-                common.ptZgen_binning_corr if isZ else common.ptWgen_binning_corr
+                binning.ptZgen_binning_corr if isZ else binning.ptWgen_binning_corr
             )
         edges_absYV = (
-            common.absYZgen_binning_corr if isZ else common.absYWgen_binning_corr
+            binning.absYZgen_binning_corr if isZ else binning.absYWgen_binning_corr
         )
 
         axis_absYVgen = hist.axis.Variable(
@@ -287,19 +290,36 @@ def build_graph(df, dataset):
     elif "NNLOPS" in dataset.name:
         weight_expr = f"{weight_expr}*LHEScaleWeightAltSet1[4]"
 
+    is_zbb_sample = dataset.name.startswith("Zbb")
+    has_unknown_altset1 = "UnknownWeightAltSet1" in [
+        str(c) for c in df.GetColumnNames()
+    ]
+    if is_zbb_sample and has_unknown_altset1:
+        df = df.Define("unknown_weight0", "UnknownWeightAltSet1[0]")
+    else:
+        df = df.Define("unknown_weight0", "1.0f")
+        if is_zbb_sample:
+            logger.warning(
+                f"Dataset {dataset.name} is missing UnknownWeightAltSet1, leaving extra study weight at 1"
+            )
+
+    # Keep generator normalization (weight_sum) independent of this study weight.
+    if not is_zbb_sample:
+        df = df.DefinePerSample("extra_weight", "1.0")
+    else:
+        df = df.Define("extra_weight", "unknown_weight0")
+
     df = df.Define("weight", weight_expr)
     df = df.DefinePerSample("unity", "1.")
     # This sum should happen before any change of the weight
     weightsum = df.SumAndCount("weight")
     df = df.Define("isEvenEvent", "event % 2 == 0")
 
-    df = theory_tools.define_theory_weights_and_corrs(
-        df, dataset.name, corr_helpers, args, theory_helpers
+    df = theory_corrections.define_theory_weights_and_corrs(
+        df, dataset.name, corr_helpers, args, helicity_smoothing_helpers
     )
 
-    if isZ or dataset.group in [
-        "DYlowMass",
-    ]:
+    if isZ:
         nominal_axes = [
             axis_massZgen,
             axis_rapidity,
@@ -333,6 +353,46 @@ def build_graph(df, dataset):
             "Sum(abs(LHEPart_pdgId[LHEPart_status==1])==4) == 1 && Sum(abs(LHEPart_pdgId[LHEPart_status==1])==5) != 1",
         )
 
+    if args.addBottomAxis:
+        axis_bottom = hist.axis.Regular(
+            2, -0.5, 1.5, underflow=False, overflow=False, name="bottom_sel"
+        )
+        nominal_axes = [*nominal_axes, axis_bottom]
+        nominal_cols = [*nominal_cols, "bottom_sel"]
+
+        df = df.Define(
+            "n_lhe_fin_bottom",
+            "Sum(LHEPart_pdgId[LHEPart_status==1]==5)",
+        )
+        df = df.Define(
+            "n_lhe_fin_antibottom",
+            "Sum(LHEPart_pdgId[LHEPart_status==1]==-5)",
+        )
+        df = df.Define(
+            "n_lhe_fin_bbbar",
+            "n_lhe_fin_bottom + n_lhe_fin_antibottom",
+        )
+        df = df.Define(
+            "n_lhe_init_bottom",
+            "Sum(LHEPart_pdgId[LHEPart_status==-1]==5)",
+        )
+        df = df.Define(
+            "n_lhe_init_antibottom",
+            "Sum(LHEPart_pdgId[LHEPart_status==-1]==-5)",
+        )
+        df = df.Define(
+            "n_lhe_init_bbbar",
+            "n_lhe_init_bottom + n_lhe_init_antibottom",
+        )
+        df = df.Define(
+            "n_lhe_bbbar",
+            "n_lhe_init_bbbar + n_lhe_fin_bbbar",
+        )
+        df = df.Define(
+            "bottom_sel",
+            "(n_lhe_bbbar > 0)",
+        )
+
     if args.addHelicityAxis:
         # add helicity axis, indices, and weights
 
@@ -353,25 +413,13 @@ def build_graph(df, dataset):
         nominal_axes += [axis_helicitygen]
         nominal_cols += ["helicity_idxs", "helicity_moments"]
 
-    mode = f'{"z" if isZ else "w"}_{analysis_label}'
-    if args.fiducial is not None:
-        if isZ and args.fiducial == "singlelep":
-            mode += "_wlike"
-
-        df = unfolding_tools.select_fiducial_space(
-            df,
-            mode=mode,
-            fiducial=args.fiducial,
-            unfolding=True,
-            selections=unfolding_selections,
-        )
-
-    if args.singleLeptonHists and (isW or isZ):
+    if args.singleLeptonHists or args.fiducial:
         gen_levels = ["prefsr", "postfsr"]
         df = unfolding_tools.define_gen_level(
             df, dataset.name, gen_levels, mode="w_mass" if isW else "z_wlike"
         )
 
+    if args.singleLeptonHists and (isW or isZ):
         for level in gen_levels:
             lep_axes = [axis_absetal_gen, axis_ptl_gen, axis_mt_gen, axis_chargel_gen]
             lep_cols = [
@@ -384,6 +432,9 @@ def build_graph(df, dataset):
             if args.addCharmAxis:
                 lep_axes = [*lep_axes, axis_charm]
                 lep_cols = [*lep_cols, "charm"]
+            if args.addBottomAxis:
+                lep_axes = [*lep_axes, axis_bottom]
+                lep_cols = [*lep_cols, "bottom_sel"]
 
             results.append(
                 df.HistoBoost(
@@ -394,9 +445,23 @@ def build_graph(df, dataset):
                 )
             )
 
+    mode = f'{"z" if isZ else "w"}_{analysis_label}'
+    if args.fiducial is not None:
+        if isZ and args.fiducial == "singlelep":
+            mode += "_wlike"
+
+        df = unfolding_tools.select_fiducial_space(
+            df,
+            mode=mode,
+            fiducial=args.fiducial,
+            unfolding=True,
+            selections=unfolding_selections,
+            gen_level="prefsr",
+        )
+
     if not args.skipEWHists and (isW or isZ) and "Zmumu_powheg-weak" in dataset.name:
         if isZ:
-            massBins = theory_tools.make_ew_binning(
+            massBins = binning.make_bw_binning(
                 mass=91.1535,
                 width=2.4932,
                 initialStep=0.10,
@@ -404,15 +469,15 @@ def build_graph(df, dataset):
                 bin_edges_high=[100, 110, 120, 140, 160, 200],
             )
         else:
-            massBins = theory_tools.make_ew_binning(
+            massBins = binning.make_bw_binning(
                 mass=80.3815, width=2.0904, initialStep=0.010
             )
 
         # LHE level
-        df = syst_tools.define_weak_weights(df, dataset.name)
+        df = systematics.define_weak_weights(df, dataset.name)
         axis_lheMV = hist.axis.Variable(massBins, name="massVlhe", underflow=False)
         axis_lhePtV = hist.axis.Variable(
-            common.ptV_binning, underflow=False, name="ptVlhe"
+            binning.ptV_binning, underflow=False, name="ptVlhe"
         )
         axis_lheAbsYV = hist.axis.Regular(50, 0, 5, underflow=False, name="absYVlhe")
         axis_lheYV = hist.axis.Regular(100, -5.0, 5.0, name="YVlhe")
@@ -427,7 +492,7 @@ def build_graph(df, dataset):
         axis_lhePhiStar = hist.axis.Regular(
             8, -np.pi, np.pi, circular=True, name="phiStarlhe"
         )
-        axis_weak = hist.axis.StrCategory(syst_tools.weakWeightNames(), name="weak")
+        axis_weak = hist.axis.StrCategory(systematics.weakWeightNames(), name="weak")
         axis_helicity = helicity_utils.axis_helicity
 
         results.append(
@@ -462,7 +527,7 @@ def build_graph(df, dataset):
                 storage=hist.storage.Weight(),
             )
         )
-        syst_tools.add_weakweights_hist(
+        systematics.add_weakweights_hist(
             results,
             df,
             [axis_lheMV, axis_lheCosThetaStar],
@@ -563,7 +628,7 @@ def build_graph(df, dataset):
         and "GenPart_status" in df.GetColumnNames()
     ):
         if isZ:
-            massBins = theory_tools.make_ew_binning(
+            massBins = binning.make_bw_binning(
                 mass=91.1535,
                 width=2.4932,
                 initialStep=0.010,
@@ -571,14 +636,14 @@ def build_graph(df, dataset):
                 bin_edges_high=[120],
             )
         else:
-            massBins = theory_tools.make_ew_binning(
+            massBins = binning.make_bw_binning(
                 mass=80.3815, width=2.0904, initialStep=0.010
             )
 
         # pre FSR
         axis_genMV = hist.axis.Variable(massBins, name="massVgen", underflow=False)
         axis_genPtV = hist.axis.Variable(
-            common.ptV_binning, underflow=False, name="ptVgen"
+            binning.ptV_binning, underflow=False, name="ptVgen"
         )
         axis_genAbsYV = hist.axis.Regular(50, 0, 5, name="absYVgen")
         results.append(
@@ -609,7 +674,7 @@ def build_graph(df, dataset):
         # post FSR, pre tau decay
         axis_ewMll = hist.axis.Variable(massBins, name="ewMll", underflow=False)
         axis_ewPtll = hist.axis.Variable(
-            common.ptV_binning, underflow=False, name="ewPTll"
+            binning.ptV_binning, underflow=False, name="ewPTll"
         )
         axis_ewAbsYll = hist.axis.Regular(50, 0, 5, name="ewAbsYll")
         results.append(
@@ -640,10 +705,10 @@ def build_graph(df, dataset):
         # dressed
         axis_ewMll = hist.axis.Variable(massBins, name="ewMll", underflow=False)
         axis_ewPtll = hist.axis.Variable(
-            common.ptV_binning, underflow=False, name="ewPTll"
+            binning.ptV_binning, underflow=False, name="ewPTll"
         )
         axis_ewAbsYll = hist.axis.Regular(50, 0, 5, name="ewAbsYll")
-        df = theory_tools.define_dressed_vars(df, mode=mode)
+        df = generator_level_definitions.define_dressed_vars(df, mode=mode)
         results.append(
             df.HistoBoost(
                 "dressed_MllPTll",
@@ -886,20 +951,20 @@ def build_graph(df, dataset):
         and "LHEPdfWeight" in df.GetColumnNames()
         and not args.onlyMainHistograms
     ):
-        df = syst_tools.add_theory_hists(
+        df = systematics.add_theory_hists(
             results,
             df,
             args,
             dataset.name,
             corr_helpers,
-            theory_helpers,
+            helicity_smoothing_helpers,
             nominal_axes,
             nominal_cols,
             base_name="nominal_gen",
             propagateToHelicity=args.propagatePDFstoHelicity,
         )
 
-        if not dataset.name.startswith("WtoNMu_MN"):
+        if not dataset.name.startswith(("WtoNMuMass", "WtoMuNuSMEFT")):
             helicity_axes = nominal_axes[:-1] if args.addHelicityAxis else nominal_axes
             helicity_cols = nominal_cols[:-2] if args.addHelicityAxis else nominal_cols
 
@@ -907,7 +972,7 @@ def build_graph(df, dataset):
                 helicity_axes = helicity_axes[:-1]
                 helicity_cols = helicity_cols[:-1]
 
-            df = syst_tools.add_helicity_hists(
+            df = systematics.add_helicity_hists(
                 results,
                 df,
                 dataset.name,
@@ -924,6 +989,16 @@ def build_graph(df, dataset):
         storage=hist.storage.Weight(),
     )
     results.append(nominal_gen)
+
+    if dataset.name.startswith("Zbb"):
+        results.append(
+            df.HistoBoost(
+                "unknown_weight0",
+                [hist.axis.Regular(120, 0.0, 3.0, name="unknown_weight0")],
+                ["unknown_weight0", "unity"],
+                storage=hist.storage.Weight(),
+            )
+        )
 
     nominal_gen_pdf_uncorr = df.HistoBoost(
         "nominal_gen_pdf_uncorr",
@@ -945,11 +1020,11 @@ def build_graph(df, dataset):
 
 
 resultdict = narf.build_and_run(datasets, build_graph)
+if not args.noScaleToData:
+    # weight to cross section / sum(weights) * lumi with lumi=1 w/o data
+    scale_to_data(resultdict)
+
 if len(args.aggregateGroups) > 0:
-    if not args.noScaleToData:
-        scale_to_data(
-            resultdict
-        )  # weight to cross section / sum(weights) * lumi with lumi=1 w/o data
     aggregate_groups(datasets, resultdict, args.aggregateGroups)
 write_analysis_output(
     resultdict, f"{os.path.basename(__file__).replace('py', 'hdf5')}", args
