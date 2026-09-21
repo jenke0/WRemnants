@@ -1,6 +1,7 @@
 import argparse
 
 import h5py
+import numpy as np
 from uncertainty_tools import (
     create_variation,
     eta_phi_systematic,
@@ -283,14 +284,17 @@ stst_prefire = addHists(Zmumu_stst_prefire, DYJets_stst_prefire)
 
 n_masked = pass_gen.project("time", "mll", "pt_probe", "eta_probe")
 
-iso_eff_var = divideHists(
-    iso_mc.project("time", "mll", "pt_probe", "eta_probe"),
-    iso_mc.project("time", "mll", "pt_probe", "eta_probe"),
-)  ## just want this to be one
 
 dtdt_all = addHists(iso_mc, dtdt_mc)
 dtst_all = addHists(dtdt_all, dtst_mc)
 stst_all = addHists(dtst_all, stst_mc)
+iso_eff_var = divideHists(
+    iso_mc.project("time", "mll", "pt_probe", "eta_probe"),
+    dtdt_all.project("time", "mll", "pt_probe", "eta_probe"),
+)  ## just want this to be one
+
+iso_eff_var.values()[:, :, 0, :] = np.ones_like(iso_eff_var[{"pt_probe": 0}].values())
+
 
 hlt_eff_var = divideHists(
     dtdt_all.project("time", "mll", "pt_probe", "eta_probe"),
@@ -678,7 +682,7 @@ for i in range(nbins_pt):  # pt
                     scaleHist(iso_probe_h2, var_size), h2_mc_eff
                 )
                 iso_var_total_h2 = scaleHist(
-                    addHists(iso_var_tag_h2, -1 * hlt_probe_h2), 2
+                    addHists(iso_var_tag_h2, -1 * iso_probe_h2), 2
                 )
 
                 writer.add_systematic(
