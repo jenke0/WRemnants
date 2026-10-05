@@ -9,7 +9,7 @@ from uncertainty_tools import (
 )
 
 from rabbit import tensorwriter
-from utilities.io_tools import input_tools
+from wremnants.utilities.io_tools import input_tools
 from wums.boostHistHelpers import (
     addHists,
 )

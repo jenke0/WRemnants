@@ -1,7 +1,7 @@
 import ROOT
 
 import narf
-from utilities import common
+from wremnants.utilities import common
 from wums import logging
 
 logger = logging.child_logger(__name__)

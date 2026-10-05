@@ -2,7 +2,7 @@ import h5py
 import matplotlib
 import matplotlib.pyplot as plt
 
-from utilities.io_tools import input_tools
+from wremnants.utilities.io_tools import input_tools
 from wums.boostHistHelpers import addHists, divideHists, scaleHist
 
 mass_bin = 9

@@ -1,4 +1,4 @@
-import matplotlib.cm as cm
+import matplotlib as mpl
 
 from wums import boostHistHelpers as hh
 from wums import logging
@@ -84,7 +84,7 @@ def get_labels_colors_procs_sorted(procs):
         "backgroumds",
     ][::-1]
 
-    cmap = cm.get_cmap("tab10")
+    cmap = mpl.colormaps["tab10"]
 
     procs = sorted(
         procs, key=lambda x: procs_sort.index(x) if x in procs_sort else len(procs_sort)

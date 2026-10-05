@@ -2,8 +2,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
-from utilities import parsing
-from utilities.io_tools import input_tools
+from wremnants.utilities import parsing
+from wremnants.utilities.io_tools import input_tools
 from wums import output_tools, plot_tools
 from wums.boostHistHelpers import (
     addHists,
@@ -129,7 +129,6 @@ cross_sec = results["DYJetsToMuMuMass10to50_2016PostVFP"]["dataset"]["xsec"]
 h_data_upper /= weightsum
 h_data_upper *= cross_sec
 h_data_upper *= 1000
-
 
 h_data = addHists(h_data_upper, h_data_lower)
 normalization = h_data.copy()

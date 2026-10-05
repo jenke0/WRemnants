@@ -9,7 +9,7 @@ from uncertainty_tools import (
     make_mutually_exclusive,
 )
 
-from utilities.io_tools import input_tools
+from wremnants.utilities.io_tools import input_tools
 from wums.boostHistHelpers import (
     divideHists,
     multiplyHists,

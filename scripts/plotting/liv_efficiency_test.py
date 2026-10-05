@@ -5,6 +5,7 @@ import h5py
 import hist
 import numpy as np
 from liv_variation_helpers_new import (
+    background_syst,
     eta_phi_systematic,
     get_corrected_mc,
     luminometer_syst,
@@ -46,7 +47,7 @@ var_size = 0.01
 background_syst_names = [
     # "ZmumuPostVFP",
     "Top",
-    "Diboson",
+    # "Diboson",
     "GGToLL_2016PostVFP",
     "QCDmuEnrichPt15_2016PostVFP",
     # "Wplusmunu_2016PostVFP",
@@ -58,7 +59,7 @@ background_syst_names = [
 background_proc = [
     # "Zmumu fail gen",
     "Top",
-    "Diboson",
+    # "Diboson",
     "GG",
     "QCD",
     # "W_plus",
@@ -74,13 +75,17 @@ background_proc = [
 file_in = "/work/submit/jbenke/WRemnants/scripts/histmakers/"
 # if not args.randTime and not args.sameSignMuon:
 file_in_name = file_in + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr.hdf5"
-# if args.randTime:
-#     file_in_name = file_in + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr_randTime.hdf5"
-# if args.sameSignMuon:
-#     file_in_name = file_in + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr_sameSignMuons.hdf5"
+if args.randTime:
+    file_in_name = (
+        file_in + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr_randTime.hdf5"
+    )
+if args.sameSignMuon:
+    file_in_name = (
+        file_in
+        + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr_sameSignMuons.hdf5"
+    )
 h5file = h5py.File(file_in_name, "r")
 results = input_tools.base_io.load_results_h5py(h5file)
-
 data_output = results["SingleMuon_2016PostVFP"]["output"]
 lumi_output = results["SingleMuon_2016PostVFP"]["lumi_outout"]
 MC_Zmumu = results["Zmumu_2016PostVFP"]["output"]
@@ -211,7 +216,7 @@ Zmumu_iso_ramses, Zmumu_dtdt_ramses, Zmumu_dtst_ramses, Zmumu_stst_ramses = (
     DYJets_ramses_linearity,
 ) = get_corrected_mc(
     results,
-    "DYJetsToMuMuMass10to50_2016PostVFP",
+    "Zmumu10to50_2016PostVFP",
     time_proj_low,
     lumi_hists,
     pcc_scaling,
@@ -296,27 +301,20 @@ stst_prefire = addHists(Zmumu_stst_prefire, DYJets_stst_prefire)
 n_masked = pass_gen.project("time", "mll", "pt_probe", "eta_probe")
 
 
-dtdt_all = addHists(iso_mc, dtdt_mc)
-dtst_all = addHists(dtdt_all, dtst_mc)
-stst_all = addHists(dtst_all, stst_mc)
+probe_axes = ("time", "mll", "pt_probe", "eta_probe")
+iso_all = iso_mc.project(*probe_axes)
+dtdt_all = addHists(iso_all, dtdt_mc.project(*probe_axes))
+dtst_all = addHists(dtdt_all, dtst_mc.project(*probe_axes))
+stst_all = addHists(dtst_all, stst_mc.project(*probe_axes))
 
 
-iso_eff_var = divideHists(
-    iso_mc.project("time", "mll", "pt_probe", "eta_probe"),
-    dtdt_all.project("time", "mll", "pt_probe", "eta_probe"),
-)  ## just want this to be one
+iso_eff_var = divideHists(iso_all, dtdt_all)  ## just want this to be one
 
 iso_eff_var.values()[:, :, 0, :] = np.ones_like(iso_eff_var[{"pt_probe": 0}].values())
 
-hlt_eff_var = divideHists(
-    dtdt_all.project("time", "mll", "pt_probe", "eta_probe"),
-    dtst_all.project("time", "mll", "pt_probe", "eta_probe"),
-)
+hlt_eff_var = divideHists(dtdt_all, dtst_all)
 
-id_eff_var = divideHists(
-    dtst_all.project("time", "mll", "pt_probe", "eta_probe"),
-    stst_all.project("time", "mll", "pt_probe", "eta_probe"),
-)
+id_eff_var = divideHists(dtst_all, stst_all)
 dtdt_mc = remove_bins(dtdt_mc)
 
 h3 = iso_mc.project("time", "mll", "pt_probe", "eta_probe")
@@ -344,6 +342,7 @@ pass_gen = pass_gen[{"mll": mass_bin}]
 # writer.add_channel(n_masked.axes, "ch_masked", masked=True)  ## is this still correct?
 # writer.add_process((divideHists(n_masked, lumi_scaling)), "Zmumu", "ch_masked")
 ### this is the low bin
+
 
 h3_data_poi_high = remove_bins(h3_data_poi, "mll", mass_bin + 1)
 h3_poi_high = remove_bins(h3_poi, "mll", mass_bin + 1)
@@ -390,25 +389,6 @@ hlt_eff_var_dtdt_values = hlt_eff_var_values[:, :, h2_pt_offset:, h2_eta_offset:
 id_eff_var_dtdt_values = id_eff_var_values[:, :, h2_pt_offset:, h2_eta_offset:]
 iso_eff_var_dtdt_values = iso_eff_var_values[:, :, h2_pt_offset:, h2_eta_offset:]
 
-# hlt_eff_var_probe = expand_hist_by_duplicate_axes(
-#     hlt_eff_var,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-# id_eff_var_probe = expand_hist_by_duplicate_axes(
-#     id_eff_var,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-
-# hlt_eff_var_probe = expand_hist_by_duplicate_axes(
-#     iso_eff_var,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-nbins_h1 = nbins_pt * nbins_eta * (nbins_pt + nbins_eta + nbins_time)
-nbins_dtdt = nbins_pt * nbins_eta * (nbins_pt - 1 + nbins_eta + nbins_time)
-
 
 def _batched_gen_axis():
     return hist.axis.StrCategory(
@@ -434,26 +414,29 @@ def _normalization_array(reference_values, i, j, pt_offset=0, eta_offset=0):
 
 def _tag_variation_array(
     variation_values,
-    reference_values,
+    reference_tag_values,
     i,
     j,
-    nbins_total,
     h2=False,
     pt_offset=0,
     eta_offset=0,
 ):
-    """Build all gen-time tag variations with NumPy."""
+    """Build all gen-time tag variations with NumPy.
+
+    Varying the efficiency in bin (i, j) changes every probe bin through the
+    events whose tag muon is in (i, j), so the variation is spread over all
+    probe bins using the tag-resolved MC yield.
+    """
     hist_i = i - pt_offset if h2 else i
     hist_j = j - eta_offset if h2 else j
     factor = variation_values[:, :, hist_i, hist_j]
+    tag_in_bin = reference_tag_values[:, :, :, :, hist_i, hist_j]
     output = np.zeros(
-        (factor.shape[0], *reference_values.shape),
-        dtype=np.result_type(factor, reference_values),
+        (factor.shape[0], *tag_in_bin.shape),
+        dtype=np.result_type(factor, tag_in_bin),
     )
     diagonal = np.arange(factor.shape[0])
-    output[diagonal, diagonal, :, hist_i, hist_j] = (
-        factor * reference_values[:, :, hist_i, hist_j] * (var_size / nbins_total)
-    )
+    output[diagonal, diagonal] = factor[:, :, None, None] * tag_in_bin * var_size
     return output
 
 
@@ -489,46 +472,13 @@ reference_values = {
     "h1": h1_mc_eff.values(),
     "h0": h0_mc_eff.values(),
 }
-
-# hlt_eff_var_tag = hlt_eff_var.copy()
-# renameAxis(hlt_eff_var_tag, "pt_probe", "pt_tag")
-# renameAxis(hlt_eff_var_tag, "eta_probe", "eta_tag")
-# hlt_eff_var_tag = broadcastSystHist(hlt_eff_var_tag, iso_mc)*(1/nbins_h1)
-
-# id_eff_var_tag = id_eff_var.copy()
-# renameAxis(id_eff_var_tag, "pt_probe", "pt_tag")
-# renameAxis(id_eff_var_tag, "eta_probe", "eta_tag")
-# id_eff_var_tag = broadcastSystHist(id_eff_var_tag, iso_mc)*(1/nbins_h1)
-
-# iso_eff_var_tag = iso_eff_var.copy()
-# renameAxis(iso_eff_var_tag, "pt_probe", "pt_tag")
-# renameAxis(iso_eff_var_tag, "eta_probe", "eta_tag")
-# iso_eff_var_tag = broadcastSystHist(iso_eff_var_tag, iso_mc)*(1/nbins_h1)
-
-# iso_eff_var_tag = expand_hist_by_duplicate_axes(
-#     iso_eff_var_tag,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-# id_eff_var_tag = expand_hist_by_duplicate_axes(
-#     id_eff_var_tag,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-
-# hlt_eff_var_tag = expand_hist_by_duplicate_axes(
-#     hlt_eff_var_tag,
-#     ["time", "pt_probe", "eta_probe"],
-#     ["gen_time", "pt_duplicate", "eta_duplicate"],
-# )
-
-# id_eff_var_probe_dtdt = remove_bins(id_eff_var_probe)
-# hlt_eff_var_probe_dtdt = remove_bins(hlt_eff_var_probe)
-# hlt_eff_var_probe_dtdt = remove_bins(hlt_eff_var_probe)
-
-# id_eff_var_tag_dtdt = remove_bins(id_eff_var_tag)
-# hlt_eff_var_tag_dtdt = remove_bins(hlt_eff_var_tag)
-# hlt_eff_var_tag_dtdt = remove_bins(hlt_eff_var_tag)
+tag_axes = ("time", "mll", "pt_probe", "eta_probe", "pt_tag", "eta_tag")
+reference_tag_values = {
+    "h3": iso_mc.project(*tag_axes).values(),
+    "h2": dtdt_mc.project(*tag_axes).values(),
+    "h1": dtst_mc.project(*tag_axes).values(),
+    "h0": stst_mc.project(*tag_axes).values(),
+}
 
 
 writer.add_channel(h3_data_central.axes, "ch_iso_eff")
@@ -631,7 +581,7 @@ for i in range(nbins_pt):
                 variation_values["hlt"], reference_values["h3"], i, j
             )
             hlt_tag_h3 = _tag_variation_array(
-                variation_values["hlt"], reference_values["h3"], i, j, nbins_h1
+                variation_values["hlt"], reference_tag_values["h3"], i, j
             )
             add_batched_systematic(
                 hlt_tag_h3 + hlt_probe_h3 + reference_values["h3"][None, ...],
@@ -644,10 +594,9 @@ for i in range(nbins_pt):
 
             hlt_tag_h2 = _tag_variation_array(
                 variation_values["hlt_dtdt"],
-                reference_values["h2"],
+                reference_tag_values["h2"],
                 i,
                 j,
-                nbins_dtdt,
                 h2=True,
                 pt_offset=h2_pt_offset,
                 eta_offset=h2_eta_offset,
@@ -669,7 +618,7 @@ for i in range(nbins_pt):
                 as_difference=True,
             )
             hlt_tag_h1 = _tag_variation_array(
-                variation_values["hlt"], reference_values["h1"], i, j, nbins_h1
+                variation_values["hlt"], reference_tag_values["h1"], i, j
             )
             hlt_probe_h1 = _probe_variation_array(
                 variation_values["hlt"], reference_values["h1"], i, j
@@ -683,7 +632,7 @@ for i in range(nbins_pt):
                 as_difference=True,
             )
             hlt_tag_h0 = _tag_variation_array(
-                variation_values["hlt"], reference_values["h0"], i, j, nbins_h1
+                variation_values["hlt"], reference_tag_values["h0"], i, j
             )
             add_batched_systematic(
                 2.0 * hlt_tag_h0,
@@ -696,10 +645,9 @@ for i in range(nbins_pt):
 
             id_tag_h2 = _tag_variation_array(
                 variation_values["id_dtdt"],
-                reference_values["h2"],
+                reference_tag_values["h2"],
                 i,
                 j,
-                nbins_dtdt,
                 h2=True,
                 pt_offset=h2_pt_offset,
                 eta_offset=h2_eta_offset,
@@ -723,10 +671,9 @@ for i in range(nbins_pt):
 
             iso_tag_h2 = _tag_variation_array(
                 variation_values["iso_dtdt"],
-                reference_values["h2"],
+                reference_tag_values["h2"],
                 i,
                 j,
-                nbins_dtdt,
                 h2=True,
                 pt_offset=h2_pt_offset,
                 eta_offset=h2_eta_offset,
@@ -749,7 +696,7 @@ for i in range(nbins_pt):
             )
 
         iso_tag_h3 = _tag_variation_array(
-            variation_values["iso"], reference_values["h3"], i, j, nbins_h1
+            variation_values["iso"], reference_tag_values["h3"], i, j
         )
         iso_probe_h3 = _probe_variation_array(
             variation_values["iso"], reference_values["h3"], i, j
@@ -763,7 +710,7 @@ for i in range(nbins_pt):
             add_poi=True,
         )
         iso_tag_h1 = _tag_variation_array(
-            variation_values["iso"], reference_values["h1"], i, j, nbins_h1
+            variation_values["iso"], reference_tag_values["h1"], i, j
         )
         iso_probe_h1 = _probe_variation_array(
             variation_values["iso"], reference_values["h1"], i, j
@@ -777,7 +724,7 @@ for i in range(nbins_pt):
             as_difference=True,
         )
         iso_tag_h0 = _tag_variation_array(
-            variation_values["iso"], reference_values["h0"], i, j, nbins_h1
+            variation_values["iso"], reference_tag_values["h0"], i, j
         )
         add_batched_systematic(
             2.0 * iso_tag_h0,
@@ -789,7 +736,7 @@ for i in range(nbins_pt):
         )
 
         id_tag_h3 = _tag_variation_array(
-            variation_values["id"], reference_values["h3"], i, j, nbins_h1
+            variation_values["id"], reference_tag_values["h3"], i, j
         )
         id_probe_h3 = _probe_variation_array(
             variation_values["id"], reference_values["h3"], i, j
@@ -803,7 +750,7 @@ for i in range(nbins_pt):
             add_poi=True,
         )
         id_tag_h1 = _tag_variation_array(
-            variation_values["id"], reference_values["h1"], i, j, nbins_h1
+            variation_values["id"], reference_tag_values["h1"], i, j
         )
         id_probe_h1 = _probe_variation_array(
             variation_values["id"], reference_values["h1"], i, j
@@ -817,7 +764,7 @@ for i in range(nbins_pt):
             as_difference=True,
         )
         id_tag_h0 = _tag_variation_array(
-            variation_values["id"], reference_values["h0"], i, j, nbins_h1
+            variation_values["id"], reference_tag_values["h0"], i, j
         )
         id_probe_h0 = _probe_variation_array(
             variation_values["id"], reference_values["h0"], i, j
@@ -832,53 +779,24 @@ for i in range(nbins_pt):
         )
 
 
-poi_mll_high = expand_hist_by_duplicate_axis(h3_poi_high, "mll", "gen_mll")
-poi_mll_low = expand_hist_by_duplicate_axis(h3_poi_low, "mll", "gen_mll")
-
-for i in range(nbins_mll):
-    if i != mass_bin:
-        if i < mass_bin:
-            writer.add_systematic(
-                addHists(poi_mll_low[{"gen_mll": i}] * var_size, h3_poi_low),
-                f"n_mll{i}",
-                "Zmumu",
-                "ch_iso_poi_low",
-                constrained=False,
-                groups=["nz"],
-            )
-        else:
-            print("above mass bin")
-            writer.add_systematic(
-                addHists(
-                    poi_mll_high[{"gen_mll": i - (mass_bin + 1)}] * var_size,
-                    h3_poi_high,
-                ),
-                f"n_mll{i}",
-                "Zmumu",
-                "ch_iso_poi_high",
-                constrained=False,
-                groups=["nz"],
-            )
-
-
-# for i in range(len(background_syst_names)):
-#     proc_name = background_proc[i]
-#     if proc_name == "Zmumu fail gen":
-#         fgen = True
-#     else:
-#         fgen = False
-#     print("proc_name: %s" % proc_name)
-#     background_syst(
-#         writer,
-#         results,
-#         background_syst_names[i],
-#         time_proj_low,
-#         lumi_scaling,
-#         [lumi_scaling_h, lumi_scaling_bg],
-#         proc_name,
-#         f"bkg_{proc_name}",
-#         fail_gen=fgen,
-#     )
+for i in range(len(background_syst_names)):
+    proc_name = background_proc[i]
+    if proc_name == "Zmumu fail gen":
+        fgen = True
+    else:
+        fgen = False
+    print("proc_name: %s" % proc_name)
+    background_syst(
+        writer,
+        results,
+        background_syst_names[i],
+        time_proj_low,
+        lumi_scaling,
+        [lumi_scaling_h, lumi_scaling_bg],
+        proc_name,
+        f"bkg_{proc_name}",
+        fail_gen=fgen,
+    )
 
 num_etaphi = len(Zmumu_stat[0].project("etaPhiRegion").values())
 
@@ -897,9 +815,10 @@ for i in range(num_etaphi):
 
 
 prefiring_syst(writer, iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire)
+
 luminometer_syst(writer, "pcc", iso_pcc, dtdt_pcc, dtst_pcc, stst_pcc, "stability")
 
-## HFOC cross detector
+# HFOC cross detector
 luminometer_syst(
     writer,
     "hfoc",
@@ -921,7 +840,7 @@ luminometer_syst(
     "stability",
 )
 
-# #### RAMSES cross detector
+#### RAMSES cross detector
 luminometer_syst(
     writer,
     "ramses",
@@ -932,7 +851,7 @@ luminometer_syst(
     "stability",
 )
 
-### RAMSES linearity
+## RAMSES linearity
 luminometer_syst(
     writer,
     "ramses",
@@ -942,6 +861,8 @@ luminometer_syst(
     stst_sbil_ramses,
     "linearity",
 )
+
+
 delta_t = (time.time() - start) / 3600
 print(f"time elapsed: {delta_t} hrs")
-writer.write(outfolder="./", outfilename="liv_test")
+writer.write(outfolder="./", outfilename="liv_randTime")

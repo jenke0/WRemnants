@@ -2,7 +2,7 @@ import h5py
 import hist
 import numpy as np
 
-from utilities.io_tools import input_tools
+from wremnants.utilities.io_tools import input_tools
 
 
 def get_cdf(hist_in):

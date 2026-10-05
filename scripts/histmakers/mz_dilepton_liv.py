@@ -10,31 +10,30 @@ from narf.lumitools import (
     make_brilcalc_helper,
     make_lumihelper,
 )
-from utilities import common, parsing
-from wremnants import (
+from wremnants.production import generator_level_definitions as theory_tools
+from wremnants.production import (
     muon_efficiencies_liv,
     muon_prefiring,
     muon_selections,
-    syst_tools,
-    theory_tools,
 )
-from wremnants.datasets.datagroups import Datagroups
-from wremnants.datasets.dataset_tools import getDatasets
-from wremnants.histmaker_tools import (
+from wremnants.production import systematics as syst_tools
+from wremnants.production.datasets.dataset_tools import getDatasets
+from wremnants.production.histmaker_tools import (
     aggregate_groups,
     scale_to_data,
     write_analysis_output,
 )
+from wremnants.utilities import common, parsing
 from wums import logging
 
 low_pt_cutoff = 15
 trigger_pt_cutoff = 25
 
-analysis_label = Datagroups.analysisLabel(os.path.basename(__file__))
+analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 
 parser.add_argument(
-    "--randTime", type=bool, default=False, help="use assign times by event number"
+    "--randTime", type=bool, default=False, help="assign times by event number"
 )
 parser.add_argument(
     "--sameSignMuon",
@@ -415,7 +414,7 @@ axis_pt_tag = hist.axis.Variable(
         47,
         55,
         60,
-        # 65,
+        65,
         80,
     ],
     name="pt_tag",
@@ -436,7 +435,7 @@ axis_pt_tag_copy = hist.axis.Variable(
         47,
         55,
         60,
-        # 65,
+        65,
         80,
     ],
     name="pt_tag",
@@ -457,7 +456,7 @@ axis_pt_probe = hist.axis.Variable(
         47,
         55,
         60,
-        # 65,
+        65,
         80,
     ],
     name="pt_probe",
@@ -478,7 +477,7 @@ axis_pt_probe_copy = hist.axis.Variable(
         47,
         55,
         60,
-        # 65,
+        65,
         80,
     ],
     name="pt_probe",
@@ -509,7 +508,7 @@ args = parser.parse_args()
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 era = args.era
 calib_filepaths = common.calib_filepaths
-lumi_files_path = "/work/submit/jbenke/WRemnants/wremnants/datasets"  #### THIS IS A REALLY DUMB WAY TO DO THIS
+lumi_files_path = f"{common.base_dir}/wremnants/production/datasets"  #### THIS IS A REALLY DUMB WAY TO DO THIS
 # hoping this can go up top
 lumicsv = f"{lumi_files_path}/bylsoutput_nBunches.csv"
 hfoc_csv = f"{lumi_files_path}/bylsoutput_nBunches_HFOC.csv"

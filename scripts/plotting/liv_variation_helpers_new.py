@@ -22,32 +22,85 @@ def mc_scaling(hist_in, hist_proj, lumi_scaling, weightsum, cross_sec):
     return hist_in_2d
 
 
-def correct_all_channels(
-    iso_mc,
-    dtdt_mc,
-    dtst_mc,
-    stst_mc,
-    hist_proj_low,
-    lumi_scaling,
-    weightsum,
-    cross_sec,
-):
-    iso = mc_scaling(iso_mc.copy(), hist_proj_low, lumi_scaling, weightsum, cross_sec)
-    dtdt = mc_scaling(dtdt_mc.copy(), hist_proj_low, lumi_scaling, weightsum, cross_sec)
-    dtst = mc_scaling(
-        dtst_mc.copy(), hist_proj_low.copy(), lumi_scaling, weightsum, cross_sec
-    )
-    stst = mc_scaling(
-        stst_mc.copy(), hist_proj_low.copy(), lumi_scaling, weightsum, cross_sec
-    )
-    return iso, dtdt, dtst, stst
-
-
 def make_ones_hist(hist_ref):
     ones = np.ones_like(hist_ref.values())
     h_ones = hist_ref.copy()
     h_ones.values()[...] = ones
     return h_ones
+
+
+##### FAST MC CORRECTIONS #####
+# The corrections below reproduce mc_scaling -> era sum -> make_mutually_exclusive
+# with plain NumPy instead of chained boost-histogram operations on the
+# (time, mll, pt_probe, eta_probe, pt_tag, eta_tag) hists, which dominated the
+# run time. The MC hists have no time axis and every correction is a per-era
+# time weight, so val(t, x) = sum_era w_era(t) * mc_era(x). The variance of
+# multiplyHists also factorises:
+#   (v1 v2)^2 (rel1 + rel2) = v2^2 * [v1^2 rel1] + [v2^2 rel2] * v1^2
+# which lets the tag axes be summed *before* the time axis is broadcast.
+
+VAR_CUTOFF = 1e-5  # relVariance cutoff used by multiplyHists
+MC_AXES = ("mll", "pt_probe", "eta_probe", "pt_tag", "eta_tag")
+PROBE_AXES = ("time", "mll", "pt_probe", "eta_probe")
+
+
+def _is_weighted(h):
+    return h.storage_type == hist.storage.Weight
+
+
+def _rel_variance(vals, variances):
+    return variances / np.clip(vals * vals, VAR_CUTOFF, None)
+
+
+def _inner(ax, start=0):
+    """Slice of the non-flow bins of an axis in a flow=True array."""
+    lo = int(ax.traits.underflow)
+    return slice(lo + start, ax.extent - int(ax.traits.overflow))
+
+
+def _make_hist(axes, vals, variances=None):
+    if variances is None:
+        h = hist.Hist(*axes)
+    else:
+        h = hist.Hist(*axes, storage=hist.storage.Weight())
+        h.variances(flow=True)[...] = variances
+    h.values(flow=True)[...] = vals
+    return h
+
+
+def _era_time_weights(lumi_hists, scaling):
+    """(values, relative variances) of the H and BG time weights of get_mc_lumis."""
+    lumi_h, lumi_bg = lumi_hists
+    sum_lumis = addHists(lumi_bg, lumi_h)
+    weights = []
+    for lumi in (lumi_h, lumi_bg):
+        w = multiplyHists(divideHists(lumi, sum_lumis), scaling)
+        vals = w.values(flow=True)
+        rel = _rel_variance(vals, w.variances(flow=True)) if _is_weighted(w) else None
+        weights.append((vals, rel))
+    return weights
+
+
+def _scaled_mc(h, weightsum, cross_sec):
+    """Values and variances (None if unweighted) of a normalised 5D MC hist,
+    with flow and axes ordered as MC_AXES."""
+    h = h.copy()
+    h /= weightsum
+    h *= cross_sec
+    h *= 1000
+    order = [h.axes.name.index(n) for n in MC_AXES]
+    vals = np.transpose(h.values(flow=True), order)
+    variances = np.transpose(h.variances(flow=True), order) if _is_weighted(h) else None
+    return vals, variances
+
+
+def _check_time_axes(time_proj_low):
+    if tuple(time_proj_low.axes.name) != ("time", *MC_AXES):
+        raise ValueError(f"Unexpected axes {time_proj_low.axes.name}")
+    if time_proj_low.axes["time"].traits.underflow or (
+        time_proj_low.axes["time"].traits.overflow
+    ):
+        raise ValueError("time axis with flow bins is not supported")
 
 
 def get_mc_lumis(
@@ -58,40 +111,148 @@ def get_mc_lumis(
     weightsum,
     cross_sec,
 ):
-    iso_h, dtdt_h, dtst_h, stst_h, iso_bg, dtdt_bg, dtst_bg, stst_bg = input_data
+    """Normalised, luminosity-weighted MC for (iso, dtdt, dtst, stst), summed over eras.
 
-    lumi_h, lumi_bg = lumi_hists
-    sum_lumis = addHists(lumi_bg, lumi_h)
-    lumi_scaling_h = divideHists(lumi_h, sum_lumis)
-    lumi_scaling_bg = divideHists(lumi_bg, sum_lumis)
-    iso_h, dtdt_h, dtst_h, stst_h = correct_all_channels(
-        iso_h,
-        dtdt_h,
-        dtst_h,
-        stst_h,
-        time_proj_low,
-        multiplyHists(lumi_scaling_h, scaling),
-        weightsum,
-        cross_sec,
+    input_data is (iso_H, dtdt_H, dtst_H, stst_H, iso_BG, dtdt_BG, dtst_BG, stst_BG).
+    Returns full (time, mll, pt_probe, eta_probe, pt_tag, eta_tag) hists.
+    """
+    _check_time_axes(time_proj_low)
+    (w_h, rel_h), (w_bg, rel_bg) = _era_time_weights(lumi_hists, scaling)
+    expand = (slice(None),) + (None,) * len(MC_AXES)
+
+    outputs = []
+    for h_hist, bg_hist in zip(input_data[:4], input_data[4:]):
+        # same order as addHists(bg, h) in the original implementation
+        total_vals = total_vars = None
+        weighted = True
+        for mc_hist, w, rel_w in ((bg_hist, w_bg, rel_bg), (h_hist, w_h, rel_h)):
+            v1, var1 = _scaled_mc(mc_hist, weightsum, cross_sec)
+            vals = v1[None, ...] * w[expand]
+            with_var = var1 is not None and rel_w is not None
+            weighted &= with_var
+            if with_var:
+                variances = vals * vals
+                variances *= _rel_variance(v1, var1)[None, ...] + rel_w[expand]
+            if total_vals is None:
+                total_vals, total_vars = vals, (variances if with_var else None)
+            else:
+                total_vals += vals
+                if weighted:
+                    total_vars += variances
+        outputs.append(
+            _make_hist(time_proj_low.axes, total_vals, total_vars if weighted else None)
+        )
+
+    return tuple(outputs)
+
+
+def _tag_sums(arr, pt_tag_ax, eta_tag_ax):
+    """Sum over the trailing tag axes for the tag selections that matter:
+    all bins, non-flow bins, and bins with pt_tag >= 25 including the tag
+    overflow (the bins remove_bins keeps)."""
+    inner = arr[..., _inner(pt_tag_ax), _inner(eta_tag_ax)]
+    pt_cut = int(pt_tag_ax.traits.underflow) + pt_tag_ax.index(25)
+    return {
+        "all": arr.sum(axis=(-2, -1)),
+        "inner": inner.sum(axis=(-2, -1)),
+        "cut": arr[..., pt_cut:, :].sum(axis=(-2, -1)),
+    }
+
+
+def get_probe_mc_lumis(
+    input_data,
+    time_proj_low,
+    scaling,
+    lumi_hists,
+    weightsum,
+    cross_sec,
+):
+    """Same as get_mc_lumis + make_mutually_exclusive, followed by
+    projecting onto (time, mll, pt_probe, eta_probe), without ever building the
+    full tag-resolved hists.
+
+    dtdt is returned with remove_bins already applied (which also drops tag
+    bins below 25 GeV before projecting); remove_bins on the result is a no-op.
+    """
+    _check_time_axes(time_proj_low)
+    weights = _era_time_weights(lumi_hists, scaling)
+    pt_tag_ax = time_proj_low.axes["pt_tag"]
+    eta_tag_ax = time_proj_low.axes["eta_tag"]
+    expand = (slice(None), None, None, None)
+
+    regions = []
+    weighted = True
+    for h_hist, bg_hist in zip(input_data[:4], input_data[4:]):
+        total = None
+        for mc_hist, (w, rel_w) in ((bg_hist, weights[1]), (h_hist, weights[0])):
+            v1, var1 = _scaled_mc(mc_hist, weightsum, cross_sec)
+            with_var = var1 is not None and rel_w is not None
+            weighted &= with_var
+            s_val = _tag_sums(v1, pt_tag_ax, eta_tag_ax)
+            if with_var:
+                v1sq = v1 * v1
+                s_a = _tag_sums(v1sq * _rel_variance(v1, var1), pt_tag_ax, eta_tag_ax)
+                s_b = _tag_sums(v1sq, pt_tag_ax, eta_tag_ax)
+                c = (w * w * rel_w)[expand]
+            era = {}
+            for key in s_val:
+                vals = w[expand] * s_val[key][None, ...]
+                variances = (
+                    (w * w)[expand] * s_a[key][None, ...] + c * s_b[key][None, ...]
+                    if with_var
+                    else None
+                )
+                era[key] = [vals, variances]
+            if total is None:
+                total = era
+            else:
+                for key in total:
+                    total[key][0] = total[key][0] + era[key][0]
+                    if weighted:
+                        total[key][1] = total[key][1] + era[key][1]
+        regions.append(total)
+
+    iso, dtdt, dtst, stst = regions
+    if not weighted:
+        for region in regions:
+            for key in region:
+                region[key][1] = None
+
+    def _add(a, b, sign):
+        if a is None or b is None:
+            return None
+        return a + b if sign > 0 else a - b
+
+    iso_out = iso["all"]
+    dtdt_cut = _add(dtdt["cut"][0], iso["cut"][0], -1)
+    # make_mutually_exclusive replaces the first pt_probe bin of dtdt by iso
+    # (non-flow bins only) before subtracting it from dtst
+    injected = dtdt["all"][0].copy()
+    mll_ax, pt_ax, eta_ax = (time_proj_low.axes[n] for n in PROBE_AXES[1:])
+    sel = (slice(None), _inner(mll_ax), _inner(pt_ax).start, _inner(eta_ax))
+    injected[sel] = iso["inner"][0][sel] + (dtdt["all"][0][sel] - dtdt["inner"][0][sel])
+    dtst_out = [
+        dtst["all"][0] - injected,
+        _add(dtst["all"][1], dtdt["all"][1], 1),
+    ]
+    stst_out = [
+        stst["all"][0] - dtst["all"][0],
+        _add(stst["all"][1], dtst["all"][1], 1),
+    ]
+
+    axes = [time_proj_low.axes[n] for n in PROBE_AXES]
+    return (
+        _make_hist(axes, *iso_out),
+        remove_bins(_make_hist(axes, dtdt_cut)),
+        _make_hist(axes, *dtst_out),
+        _make_hist(axes, *stst_out),
     )
 
-    iso_bg, dtdt_bg, dtst_bg, stst_bg = correct_all_channels(
-        iso_bg,
-        dtdt_bg,
-        dtst_bg,
-        stst_bg,
-        time_proj_low,
-        multiplyHists(lumi_scaling_bg, scaling),
-        weightsum,
-        cross_sec,
-    )
 
-    iso = addHists(iso_bg, iso_h)
-    dtdt = addHists(dtdt_bg, dtdt_h)
-    dtst = addHists(dtst_bg, dtst_h)
-    stst = addHists(stst_bg, stst_h)
-
-    return iso, dtdt, dtst, stst
+def rescale_hists(rescale, hists):
+    """Multiply the values of each hist by a time-only hist (e.g. luminometer ratio)."""
+    r = rescale.values(flow=True)[(slice(None),) + (None,) * (hists[0].ndim - 1)]
+    return tuple(_make_hist(h.axes, r * h.values(flow=True)) for h in hists)
 
 
 ### i need to get good at coding so i dont need to pass in all these variables
@@ -128,16 +289,13 @@ def eta_phi_systematic(
         stst_BG_stat[{"etaPhiRegion": etaphi_num}],
     ]
 
-    iso_stat, dtdt_stat, dtst_stat, stst_stat = get_mc_lumis(
+    iso_stat, dtdt_stat, dtst_stat, stst_stat = get_probe_mc_lumis(
         input_data,
         time_hists,
         lumi_scaling,
         lumi_hists,
         weightsum,
         cross_sec,
-    )
-    iso_stat, dtdt_stat, dtst_stat, stst_stat = make_mutually_exclusive(
-        iso_stat, dtdt_stat, dtst_stat, stst_stat
     )
 
     poi_prefire_stat_proj = iso_stat.project("time", "mll")
@@ -166,7 +324,6 @@ def eta_phi_systematic(
         constrained=True,
         groups=["prefiring_stat"],
     )
-    dtdt_stat = remove_bins(dtdt_stat)
     writer.add_systematic(
         dtdt_stat[{"mll": mass_bin}].project("time", "pt_probe", "eta_probe"),
         f"prefiring_stat_etaphi_{etaphi_num}",
@@ -296,7 +453,7 @@ def background_syst(
     if res_str == "Ztautau_2016PostVFP":
         signal_proc = True
     else:
-        signa_proc = False
+        signal_proc = False
     ### MAKE THIS IMPLEMENTATION NOT STUPID
     if fail_gen:
         dtdt_prpg_BG, _, _ = get_era_vals(MC, "dtdt", "BG", "fail")
@@ -328,7 +485,7 @@ def background_syst(
         stst_prpg_BG,
     ]
 
-    iso, dtdt, dtst, stst = get_mc_lumis(
+    iso, dtdt, dtst, stst = get_probe_mc_lumis(
         prpg_all,
         time_proj_low,
         lumi_scaling,
@@ -336,8 +493,6 @@ def background_syst(
         weightsum,
         cross_sec,
     )
-    iso, dtdt, dtst, stst = make_mutually_exclusive(iso, dtdt, dtst, stst)
-    dtdt = remove_bins(dtdt)
 
     iso_poi = iso.project("time", "mll")
 
@@ -385,7 +540,7 @@ def background_syst(
     #             )
 
     var = 1.01
-    if proc_name == "W" or "Diboson":
+    if proc_name in ("W", "W_plus", "W_minus", "Diboson"):
         var = 1.001
     # writer.add_norm_systematic(
     #     f"{bkg_name}", f"{proc_name}", "ch_iso_poi_high", var, groups=["bkg"]
@@ -401,10 +556,9 @@ def background_syst(
     dtst_proc = dtst[{"mll": mass_bin}].project("time", "pt_probe", "eta_probe")
     stst_proc = stst[{"mll": mass_bin}].project("time", "pt_probe", "eta_probe")
 
-    if proc_name == "W":
-        dtdt_proc.variances()[...] = np.abs(dtdt_proc.variances())
+    if proc_name == "W_minus":
         dtdt_proc.values()[...] = np.abs(
-            dtdt_proc.variances()
+            dtdt_proc.values()
         )  ## there are no variances less than -0.01 so setting this as positive per kenneth's recommendation
 
     writer.add_process(
@@ -421,19 +575,20 @@ def background_syst(
     )
 
     var = 1.01
-    if proc_name == "W" or "Diboson":
+    if proc_name in ("W", "W_plus", "W_minus", "Diboson"):
         var = 1.001
+
     writer.add_norm_systematic(
-        f"{bkg_name}", f"{proc_name}", "ch_iso_eff", var, groups=["bkg"]
+        f"{bkg_name}", f"n_mll9_{proc_name}", "ch_iso_eff", var, groups=["bkg"]
     )
     writer.add_norm_systematic(
-        f"{bkg_name}", f"{proc_name}", "ch_dtdt_eff", var, groups=["bkg"]
+        f"{bkg_name}", f"n_mll9_{proc_name}", "ch_dtdt_eff", var, groups=["bkg"]
     )
     writer.add_norm_systematic(
-        f"{bkg_name}", f"{proc_name}", "ch_dtst_eff", var, groups=["bkg"]
+        f"{bkg_name}", f"n_mll9_{proc_name}", "ch_dtst_eff", var, groups=["bkg"]
     )
     writer.add_norm_systematic(
-        f"{bkg_name}", f"{proc_name}", "ch_stst_eff", var, groups=["bkg"]
+        f"{bkg_name}", f"n_mll9_{proc_name}", "ch_stst_eff", var, groups=["bkg"]
     )
 
 
@@ -451,34 +606,58 @@ def remove_bins(old_hist, ax_name="pt_probe", nbins=1, low=True):
     axes = list(old_hist.axes)
     axes[ax_name_ind] = new_axis
 
-    slices = [slice(None)] * old_hist.ndim
+    # slices in flow=True coordinates; flow bins are dropped except on the tag
+    # axes, where they are kept (the pt_tag overflow is populated)
+    src = [_inner(ax) for ax in old_hist.axes]
+    first = src[ax_name_ind].start
     if low:
-        slices[ax_name_ind] = slice(nbins, None)
+        src[ax_name_ind] = slice(first + nbins, src[ax_name_ind].stop)
     elif not low:
-        slices[ax_name_ind] = slice(None, nbins - 1)
+        src[ax_name_ind] = slice(first, first + nbins - 1)
+    dst = [_inner(ax) for ax in axes]
+    dst[ax_name_ind] = _inner(new_axis)
 
-    if "probe" in ax_name:
-        try:
-            new_tag_axis = hist.axis.Variable(new_edges, name=f"{ax_name[:-5]}tag")
-            tag_ind = old_hist.axes.name.index(f"{ax_name[:-5]}tag")
-            axes[tag_ind] = new_tag_axis
-            slices[tag_ind] = slice(nbins, None)
-        except:  ## if there is no tag access for some reason
-            pass
+    tag_name = f"{ax_name[:-5]}tag"
+    if "probe" in ax_name and tag_name in old_hist.axes.name:
+        tag_ind = old_hist.axes.name.index(tag_name)
+        old_tag_axis = old_hist.axes[tag_ind]
+        new_tag_axis = hist.axis.Variable(
+            new_edges, name=tag_name, overflow=old_tag_axis.traits.overflow
+        )
+        axes[tag_ind] = new_tag_axis
+        src[tag_ind] = slice(int(old_tag_axis.traits.underflow) + nbins, None)
+        dst[tag_ind] = slice(int(new_tag_axis.traits.underflow), None)
+        other_tag = "eta_tag" if tag_name == "pt_tag" else "pt_tag"
+        if other_tag in old_hist.axes.name:
+            other_ind = old_hist.axes.name.index(other_tag)
+            src[other_ind] = dst[other_ind] = slice(None)
 
     new_hist = hist.Hist(*axes)
-    new_hist.values()[...] = old_hist.values()[tuple(slices)]
+    new_hist.values(flow=True)[tuple(dst)] = old_hist.values(flow=True)[tuple(src)]
 
     return new_hist
 
 
 def make_mutually_exclusive(iso, dtdt, dtst, stst):
+    def _subtract(h1, vals2, h2):
+        # addHists(h1, scaleHist(h2, -1)), with the values of h2 replaced by vals2
+        weighted = _is_weighted(h1) and _is_weighted(h2)
+        return _make_hist(
+            h1.axes,
+            h1.values(flow=True) - vals2,
+            h1.variances(flow=True) + h2.variances(flow=True) if weighted else None,
+        )
+
     iso_ex = iso
-    dtdt_ex = addHists(dtdt, scaleHist(iso, -1))
-    dtdt_iso_injected = dtdt.copy()
-    dtdt_iso_injected.values()[:, :, 0, :, :, :] = iso[:, :, 0, :, :, :].values()
-    dtst_ex = addHists(dtst, scaleHist(dtdt_iso_injected, -1))
-    stst_ex = addHists(stst, scaleHist(dtst, -1))
+    dtdt_ex = _subtract(dtdt, iso.values(flow=True), iso)
+    # the first pt_probe bin of dtdt is replaced by iso (non-flow bins only)
+    dtdt_iso_injected = dtdt.values(flow=True).copy()
+    sel = tuple(
+        _inner(ax).start if ax.name == "pt_probe" else _inner(ax) for ax in dtdt.axes
+    )
+    dtdt_iso_injected[sel] = iso.values(flow=True)[sel]
+    dtst_ex = _subtract(dtst, dtdt_iso_injected, dtdt)
+    stst_ex = _subtract(stst, dtst.values(flow=True), dtst)
 
     return iso_ex, dtdt_ex, dtst_ex, stst_ex
 
@@ -681,84 +860,35 @@ def get_corrected_mc(
 
     pass_gen = MC["pass_gen"].get()
 
-    iso, dtdt, dtst, stst = get_mc_lumis(
-        prpg_all,
-        time_proj_low,
-        lumi_scaling,
-        lumi_hists,
-        weightsum,
-        xsec,
-    )
+    lumi_args = (time_proj_low, lumi_scaling, lumi_hists, weightsum, xsec)
+
+    iso, dtdt, dtst, stst = make_mutually_exclusive(*get_mc_lumis(prpg_all, *lumi_args))
+    corrected_mc = [iso, dtdt, dtst, stst]
     print("through nominal corrections")
+
+    # the variations below are only used through projections onto the probe
+    # axes, so they are built directly as (time, mll, pt_probe, eta_probe) hists
     if luminometers:
-        ### i think the way these should work is i do it in a single mass bin then project it across all the rest?
+        probe_mc = get_probe_mc_lumis(prpg_all, *lumi_args)
 
-        hfoc_rescale = divideHists(hfoc_scaling, lumi_scaling)
-        iso_hfoc = multiplyHists(hfoc_rescale, iso)
-        dtdt_hfoc = multiplyHists(hfoc_rescale, dtdt)
-        dtst_hfoc = multiplyHists(hfoc_rescale, dtst)
-        stst_hfoc = multiplyHists(hfoc_rescale, stst)
-
-        print("hfoc stability")
-        pcc_rescale = divideHists(pcc_scaling, lumi_scaling)
-        iso_pcc = multiplyHists(pcc_rescale, iso)
-        dtdt_pcc = multiplyHists(pcc_rescale, dtdt)
-        dtst_pcc = multiplyHists(pcc_rescale, dtst)
-        stst_pcc = multiplyHists(pcc_rescale, stst)
-        print("pcc stability")
-
-        ramses_rescale = divideHists(ramses_scaling, lumi_scaling)
-        iso_ramses = multiplyHists(ramses_rescale, iso)
-        dtdt_ramses = multiplyHists(ramses_rescale, dtdt)
-        dtst_ramses = multiplyHists(ramses_rescale, dtst)
-        stst_ramses = multiplyHists(ramses_rescale, stst)
-        print("ramses stability")
-
-        hfoc_sbil_rescale = divideHists(hfoc_sbil, lumi_scaling)
-        iso_sbil_hfoc = multiplyHists(hfoc_sbil_rescale, iso)
-        dtdt_sbil_hfoc = multiplyHists(hfoc_sbil_rescale, dtdt)
-        dtst_sbil_hfoc = multiplyHists(hfoc_sbil_rescale, dtst)
-        stst_sbil_hfoc = multiplyHists(hfoc_sbil_rescale, stst)
-        print("hfoc linearity")
-
-        ramses_sbil_rescale = divideHists(ramses_sbil, lumi_scaling)
-        iso_sbil_ramses = multiplyHists(ramses_sbil_rescale, iso)
-        dtdt_sbil_ramses = multiplyHists(ramses_sbil_rescale, dtdt)
-        dtst_sbil_ramses = multiplyHists(ramses_sbil_rescale, dtst)
-        stst_sbil_ramses = multiplyHists(ramses_sbil_rescale, stst)
-        print("ramses linearity")
-
-        iso_pcc, dtdt_pcc, dtst_pcc, stst_pcc = make_mutually_exclusive(
-            iso_pcc, dtdt_pcc, dtst_pcc, stst_pcc
+        hfoc_stability = rescale_hists(
+            divideHists(hfoc_scaling, lumi_scaling), probe_mc
         )
-        iso_hfoc, dtdt_hfoc, dtst_hfoc, stst_hfoc = make_mutually_exclusive(
-            iso_hfoc, dtdt_hfoc, dtst_hfoc, stst_hfoc
+        pcc_stability = rescale_hists(divideHists(pcc_scaling, lumi_scaling), probe_mc)
+        ramses_stability = rescale_hists(
+            divideHists(ramses_scaling, lumi_scaling), probe_mc
         )
-        iso_sbil_hfoc, dtdt_sbil_hfoc, dtst_sbil_hfoc, stst_sbil_hfoc = (
-            make_mutually_exclusive(
-                iso_sbil_hfoc, dtdt_sbil_hfoc, dtst_sbil_hfoc, stst_sbil_hfoc
-            )
+        hfoc_linearity = rescale_hists(divideHists(hfoc_sbil, lumi_scaling), probe_mc)
+        ramses_linearity = rescale_hists(
+            divideHists(ramses_sbil, lumi_scaling), probe_mc
         )
-        iso_sbil_ramses, dtdt_sbil_ramses, dtst_sbil_ramses, stst_sbil_ramses = (
-            make_mutually_exclusive(
-                iso_sbil_ramses, dtdt_sbil_ramses, dtst_sbil_ramses, stst_sbil_ramses
-            )
-        )
+        print("luminometers")
 
     ### dtdt was negative from before this was all passed into a single function. need to investigate further
-    iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire = get_mc_lumis(
-        syst,
-        time_proj_low,
-        lumi_scaling,
-        lumi_hists,
-        weightsum,
-        xsec,
+    iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire = get_probe_mc_lumis(
+        syst, *lumi_args
     )
     print("prefiring")
-
-    iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire = make_mutually_exclusive(
-        iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire
-    )
 
     pass_gen = mc_scaling(
         pass_gen,
@@ -767,22 +897,9 @@ def get_corrected_mc(
         weightsum,
         xsec,
     )
-    iso, dtdt, dtst, stst = make_mutually_exclusive(iso, dtdt, dtst, stst)
-    corrected_mc = [iso, dtdt, dtst, stst]
     corrected_prefiring = [iso_prefire, dtdt_prefire, dtst_prefire, stst_prefire]
 
     if luminometers:
-        pcc_stability = [iso_pcc, dtdt_pcc, dtst_pcc, stst_pcc]
-        hfoc_stability = [iso_hfoc, dtdt_hfoc, dtst_hfoc, stst_hfoc]
-        ramses_stability = [iso_ramses, dtdt_ramses, dtst_ramses, stst_ramses]
-        hfoc_linearity = [iso_sbil_hfoc, dtdt_sbil_hfoc, dtst_sbil_hfoc, stst_sbil_hfoc]
-        ramses_linearity = [
-            iso_sbil_ramses,
-            dtdt_sbil_ramses,
-            dtst_sbil_ramses,
-            stst_sbil_ramses,
-        ]
-
         return (
             corrected_mc,
             pass_gen,

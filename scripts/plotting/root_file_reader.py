@@ -3,7 +3,7 @@ import pdb
 import numpy as np
 import ROOT
 
-from utilities import common
+from wremnants.utilities import common
 
 data_dir = common.data_dir
 # root -l allSmooth_GtoHout_vtxAgnIso_altBkg.root
