@@ -18,8 +18,8 @@ relative LIV shift of each (time, m_ll, y_ll) bin from the parton-level SME basi
 template, not the shift). The basis for the 10 x 2 bins is computed here and cached.
 
 Each coefficient is fitted on its own (1D bounds, the others at zero). '--fit all' runs the
-Table 2 set in its order: c_u, d_u, c_d, c_c, d_c, c_s, c_b, d_b, each for XY, XZ, YZ and
-XX-YY.
+Table 2 set in its order: c_u, d_u, c_d, c_c, d_c, c_s, c_b, d_b, each for TX, TY, XY, XZ,
+YZ and XX-YY (the rows of Table 4; --directions selects a subset, e.g. --directions xy xz yz xx).
 
   usage (inside singularity, after source setup.sh):
     python scripts/plotting/liv_atlas_2d_fit.py -o OUTDIR --fit all
@@ -55,9 +55,10 @@ TABLE2 = [
     ("c", "b"),
     ("d", "b"),
 ]
-DIRECTIONS = ["xy", "xz", "yz", "xx"]
-# all directions of the model (tx, ty: the time-space coefficients c^{TX}, c^{TY})
-ALL_DIRECTIONS = DIRECTIONS + ["tx", "ty"]
+# all directions of the model, in the row order of Table 4
+# (tx, ty: the time-space coefficients c^{TX}, c^{TY}); fitted by default with '--fit all'
+ALL_DIRECTIONS = ["tx", "ty", "xy", "xz", "yz", "xx"]
+DIRECTIONS = ALL_DIRECTIONS
 
 
 def table2_coefficients(directions=DIRECTIONS):

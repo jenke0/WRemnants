@@ -10,8 +10,7 @@ then plots pt, eta and m_ll for two selections:
   eta2p4     additionally |eta| < 2.4 for both leptons
 Plots are normalised to expected Run 2 events (xsec_pb * lumi_pb / n_total).
 
-  usage (inside singularity): python liv_pheno_projections.py [--jobs N] [-o/--outdir DIR]
-                                  [--ptMin X] [--ptLeadMin Z] [--ptMax Y] [--linear]
+  usage (inside singularity): python liv_pheno_projections.py [--jobs N] [-o/--outdir DIR] [--ptMin X] [--ptLeadMin Z] [--ptMax Y] [--linear]
 """
 
 import argparse
